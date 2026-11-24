@@ -1,0 +1,18 @@
+{
+  "version":2,
+  "title":"데모 · 작은 여행",
+  "output":{"width":1920,"height":1080,"fps":30,"fit":"cover","file":"demo_output.mp4"},
+  "transition":{"type":"crossfade","duration":0.5},
+  "clips":[
+    {"file":"media/demo_01.png","type":"image","duration":5,"label":"01 · 햇살이 드는 풍경","motion":"zoom_in","motion_strength":0.15},
+    {"file":"media/demo_02.png","type":"image","duration":5,"label":"02 · 초록빛 오후","motion":"pan_left","motion_strength":0.1},
+    {"file":"media/demo_03.png","type":"image","duration":5,"label":"03 · 조용한 저녁","motion":"zoom_out","motion_strength":0.1}
+  ],
+  "subtitle":{"file":null,"offset":0,"burn_in":true,"style":{"font":"Malgun Gothic","size":52,"color":"#FFFFFF","position":"bottom","outline":2.5},"items":[
+    {"index":1,"start":0.4,"end":4.7,"text":"햇살이 천천히 숲을 비춥니다."},
+    {"index":2,"start":5.3,"end":9.5,"text":"마음도 조금씩 환해집니다."},
+    {"index":3,"start":10.4,"end":14.7,"text":"오늘의 장면을 오래 간직해 봅니다."}
+  ]},
+  "bgm":{"file":null,"volume":0.25,"loop":true,"duck_under_voice":true},
+  "dubbing":{"folder":"takes","takes":[]}
+}
