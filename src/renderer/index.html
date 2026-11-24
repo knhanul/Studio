@@ -1,1 +1,26 @@
-<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>고모 편집실</title></head><body><div id="root"></div><script type="module" src="./main.tsx"></script></body></html>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>고모 편집실</title>
+  <script>
+    (function() {
+      try {
+        var theme = localStorage.getItem('gomo-compose-theme') || 'light-blue';
+        var auto = localStorage.getItem('gomo-compose-auto-theme') === 'true';
+        if (auto) {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light-blue';
+        }
+        if (!['light-blue','warm-cream','silver-light','dark'].includes(theme)) theme = 'light-blue';
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light';
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./main.tsx"></script>
+</body>
+</html>
