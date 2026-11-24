@@ -3,19 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>고모 편집실</title>
   <script>
-    (function() {
+    (function(){
       try {
-        var theme = localStorage.getItem('gomo-compose-theme') || 'light-blue';
-        var auto = localStorage.getItem('gomo-compose-auto-theme') === 'true';
-        if (auto) {
-          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light-blue';
+        var key = 'compose-theme';
+        var syncKey = 'compose-theme-system-sync';
+        var stored = localStorage.getItem(key);
+        var sync = localStorage.getItem(syncKey) === '1';
+        var theme = 'light-blue';
+        if (sync) {
+          theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light-blue';
+        } else if (stored && ['light-blue','warm-cream','silver-light','dark'].indexOf(stored) !== -1) {
+          theme = stored;
         }
-        if (!['light-blue','warm-cream','silver-light','dark'].includes(theme)) theme = 'light-blue';
         document.documentElement.setAttribute('data-theme', theme);
         document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light';
-      } catch (e) {}
+      } catch(e) {}
     })();
   </script>
 </head>

@@ -20,7 +20,7 @@ function readStored(): { theme: ThemeId; auto: boolean } {
     const rawTheme = localStorage.getItem(THEME_STORAGE_KEY);
     const rawAuto = localStorage.getItem(AUTO_THEME_STORAGE_KEY);
     const theme = rawTheme && isValidTheme(rawTheme) ? rawTheme : DEFAULT_THEME;
-    const auto = rawAuto === 'true';
+    const auto = rawAuto === '1';
     return { theme, auto };
   } catch {
     return { theme: DEFAULT_THEME, auto: false };
@@ -38,7 +38,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setAuto = useCallback((enabled: boolean) => {
     setState(s => ({ ...s, auto: enabled }));
-    localStorage.setItem(AUTO_THEME_STORAGE_KEY, String(enabled));
+    localStorage.setItem(AUTO_THEME_STORAGE_KEY, enabled ? '1' : '0');
     if (enabled) {
       // System theme will be applied via effect / IPC if available
       const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
