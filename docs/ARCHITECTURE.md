@@ -1,4 +1,4 @@
-# 고모 편집실 아키텍처 v0.2
+# 고모 편집실 아키텍처 v0.3
 
 ## 설계 의도
 
@@ -20,7 +20,8 @@
    다음 장면으로 넘어가는 전환 시간만큼 길게 만들어 둠.
 2. 이어 붙이기: 전환이 있으면 `xfade`/`acrossfade`, 없으면 concat.
 3. 자막: ASS 파일로 만들어 `ass` 필터로 새김(작업 폴더 기준 상대 경로, Windows 글꼴 폴더 지정).
-4. 소리: 테이크(자르기·크기·위치) amix → 배경음악(반복·페이드·크기) → sidechaincompress 자동 줄이기 → alimiter.
+4. 소리: 테이크(자르기·크기·위치) amix → 소리 층(`musicLayers`: 배경음악 + 바뀌는 음악 + 효과음, 각각 구간·반복·페이드·크기) →
+   자동 줄이기가 켜진 층은 한 묶음(musicbus)으로 sidechaincompress, 나머지(효과음)는 그대로 → alimiter.
 5. 진행률은 `-progress pipe:1`, 취소는 AbortSignal.
 
 ## 테이크 위치
@@ -33,3 +34,10 @@
 - 저장은 임시 파일 작성 후 교체. 변경 900ms 뒤 자동 저장.
 - 다시 녹음해도 예전 WAV는 지우지 않음(`line_0001_v2.wav` …).
 - 렌더는 임시 작업 폴더에서 하고, 끝나면 정리.
+
+## 미디어 보관함 (`shared/media.ts`)
+
+- 창작실을 열 때 우선순위: `composer_project.json` → `project.json`(creator.project.v1) → `gomo-handoff.json`.
+- 보관함 = 창작실 `project.json`의 assets(장면 연결 · 기준 이미지 · 다른 버전 · BGM) + `assets/` · `media/` 폴더의 실제 파일.
+  파일 이름 규칙(`S04_image_v2.png`, `BGM_02.mp3`)은 창작실 `asset-naming.ts`와 같음. 없어진 파일은 열 때 뺌.
+- 장면 클립에 `scene_id`, 영상 클립에 `poster`(기준 이미지)를 채워 같은 장면의 다른 미디어를 찾음.

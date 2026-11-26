@@ -12,7 +12,7 @@ export function stepDone(d:ComposerProject,step:StepId):boolean{
   if(step==='scenes')return d.clips.length>0&&d.clips.every(c=>!!c.file);
   if(step==='dubbing')return cues.length>0&&cues.every(c=>!!takeForCue(d,c.index));
   if(step==='subtitles')return cues.length>0&&cues.every(c=>c.text.trim()&&c.end>c.start);
-  if(step==='music')return !!d.bgm.file;
+  if(step==='music')return !!d.bgm.file||!!d.audio_cues?.length;
   return false;
 }
 export function stepGuide(d:ComposerProject,step:StepId):StepGuide{
@@ -21,7 +21,8 @@ export function stepGuide(d:ComposerProject,step:StepId):StepGuide{
   const cues=d.subtitle.items||[];
   if(step==='scenes'){
     const missing=[...(!d.clips.length?['장면 1개 이상']:[]),...(d.clips.some(c=>!c.file)?['비어 있는 장면 파일']:[])];
-    return {step,ready:!missing.length,missing,next,nextLabel,hint:missing.length?'창작실 작품을 불러오거나 이미지·영상을 추가해 주세요.':`장면 ${d.clips.length}개가 준비됐어요. 순서와 길이를 확인한 뒤 더빙으로 넘어가세요.`};
+    const used=new Set(d.clips.map(c=>c.file));const alt=(d.media_library||[]).filter(m=>m.scene_id&&m.kind!=='audio'&&!used.has(m.file)).length;
+    return {step,ready:!missing.length,missing,next,nextLabel,hint:missing.length?'창작실 작품을 불러오거나 이미지·영상을 추가해 주세요.':`장면 ${d.clips.length}개가 준비됐어요.${alt?` 같은 장면의 다른 이미지·영상 ${alt}개가 미디어 보관함에 있어요.`:''} 순서와 길이를 확인한 뒤 더빙으로 넘어가세요.`};
   }
   if(step==='dubbing'){
     const done=cues.filter(c=>takeForCue(d,c.index)).length;
@@ -32,6 +33,8 @@ export function stepGuide(d:ComposerProject,step:StepId):StepGuide{
     const missing=[...(empty?[`빈 자막 ${empty}개`]:[]),...(bad?[`시간이 잘못된 자막 ${bad}개`]:[])];
     return {step,ready:!missing.length,missing,next,nextLabel,hint:missing.length?'빈 자막이나 끝 시간이 시작보다 빠른 자막을 고쳐 주세요.':cues.length?`자막 ${cues.length}개 · ${d.subtitle.burn_in===false?'영상에 넣지 않음':'영상에 새겨 넣음'}`:'자막 없이 진행해도 돼요.'};
   }
-  if(step==='music')return {step,ready:true,missing:[],next,nextLabel,hint:d.bgm.file?'배경음악과 목소리 크기를 들어 보며 맞춰 보세요.':'배경음악 없이 진행해도 돼요.'};
-  return {step,ready:d.clips.length>0,missing:d.clips.length?[]:['장면 1개 이상'],next:null,nextLabel,hint:'미리보기용 빠른 영상으로 먼저 확인한 뒤 완성 영상을 만들어 보세요.'};
+  if(step==='music'){const extra=d.audio_cues?.length||0;const pkg=(d.media_library||[]).filter(m=>m.kind==='audio').length;
+    return {step,ready:true,missing:[],next,nextLabel,hint:d.bgm.file?`배경음악${extra?`과 추가 소리 ${extra}개`:''}, 목소리 크기를 들어 보며 맞춰 보세요.`:pkg?`창작실 패키지에 음악 ${pkg}개가 있어요. 골라 넣거나 배경음악 없이 진행해도 돼요.`:'배경음악 없이 진행해도 돼요.'};}
+  const exportMissing=[...(d.clips.length?[]:['장면 1개 이상']),...(d.clips.some(c=>!c.file)?['비어 있는 장면 파일']:[])];
+  return {step,ready:!exportMissing.length,missing:exportMissing,next:null,nextLabel,hint:'미리보기용 빠른 영상으로 먼저 확인한 뒤 완성 영상을 만들어 보세요.'};
 }

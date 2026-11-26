@@ -19,13 +19,17 @@ run(['-f','lavfi','-i','smptebars=s=800x800:d=1','-frames:v','1',path.join(base,
 run(['-f','lavfi','-i','testsrc=s=640x360:d=4:r=25','-f','lavfi','-i','sine=f=330:d=4','-shortest','-c:v','libx264','-pix_fmt','yuv420p',path.join(base,'assets','S03_video.mp4')]);
 run(['-f','lavfi','-i','sine=f=220:d=2','-ar','48000',path.join(base,'takes','line_0001_v1.wav')]);
 run(['-f','lavfi','-i','sine=f=440:d=3','-ar','44100',path.join(base,'assets','BGM_01.mp3')]);
+run(['-f','lavfi','-i','sine=f=660:d=2','-ar','44100',path.join(base,'assets','BGM_02.mp3')]);
+run(['-f','lavfi','-i','sine=f=990:d=0.4','-ar','48000',path.join(base,'assets','ding.wav')]);
 const p=project.createProject('스모크');
 p.output={...p.output,width:640,height:360,fps:25};
 p.clips=[{file:'assets/S01_image.png',type:'image',duration:2.5,motion:'zoom_in',motion_strength:.15},{file:'assets/S02_image.png',type:'image',duration:2,motion:'pan_left',motion_strength:.1,transition:{type:'fade',duration:.5}},
   {file:'assets/S03_video.mp4',type:'video',fit_duration:2,mute:false,transition:{type:'none',duration:0}}];
 p.subtitle.items=[{index:1,start:.3,end:2.2,text:'안녕하세요 {고모}'},{index:2,start:2.6,end:4.3,text:'두 번째\n줄입니다'}];
 p.dubbing.takes=[{file:'takes/line_0001_v1.wav',subtitle:1,offset:-.2,trim_start:.2,trim_end:1.8,volume:.8,duration:2}];
-p.bgm={...p.bgm,file:'assets/BGM_01.mp3',volume:.3,loop:true,duck_under_voice:true,fade_in:.5,fade_out:1};
+p.bgm={...p.bgm,file:'assets/BGM_01.mp3',volume:.3,loop:true,duck_under_voice:true,fade_in:.5,fade_out:1,end:4.5};
+// 장면 3부터 다른 음악 + 효과음 (창작실 패키지의 여러 BGM 활용)
+p.audio_cues=[{id:'m2',file:'assets/BGM_02.mp3',kind:'music',start:4.5,loop:true,volume:.3,fade_in:.3,fade_out:.5},{id:'fx',file:'assets/ding.wav',kind:'effect',start:2.4,volume:.9,duration:.4}];
 const expected=project.totalDuration(p);
 for(const draft of [true,false]){
   const out=path.join(base,draft?'preview.mp4':'final.mp4');let last=0;

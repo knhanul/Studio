@@ -5,7 +5,7 @@ import type {Clip,ComposerProject,SubtitleItem} from '../../shared/types';
 import {useEditor} from '../editor';
 import {useElementSize} from '../hooks/useElementSize';
 
-function Layer({clip,url,local,progress,opacity,playing,z}:{clip:Clip;url?:string;local:number;progress:number;opacity:number;playing:boolean;z:number}){
+function Layer({clip,url,poster,local,progress,opacity,playing,z}:{clip:Clip;url?:string;poster?:string;local:number;progress:number;opacity:number;playing:boolean;z:number}){
   const ref=useRef<HTMLVideoElement>(null);
   const target=(Number(clip.trim_start)||0)+local*clipSpeed(clip);
   useEffect(()=>{const v=ref.current;if(!v)return;
@@ -14,10 +14,11 @@ function Layer({clip,url,local,progress,opacity,playing,z}:{clip:Clip;url?:strin
     if(playing&&v.paused)void v.play().catch(()=>{});if(!playing&&!v.paused)v.pause();
   });
   const style:CSSProperties={opacity,zIndex:z};
+  if(!url&&poster)return <div className="monitor-layer" style={style}><img src={poster} alt="" draggable={false} style={{objectFit:(clip.fit||'cover')==='contain'?'contain':'cover'}}/><span className="monitor-badge">영상 파일을 찾을 수 없어 기준 이미지를 보여 줘요</span></div>;
   if(!url)return <div className="monitor-layer monitor-missing" style={style}><Film size={26}/><span>{clip.file?'파일을 찾을 수 없어요':'미디어 없음'}</span></div>;
   const fit=(clip.fit||'cover')==='contain'?'contain':'cover';
   return <div className="monitor-layer" style={style}>{clip.type==='video'
-    ?<video ref={ref} src={url} preload="auto" playsInline style={{objectFit:fit}}/>
+    ?<video ref={ref} src={url} poster={poster} preload="auto" playsInline style={{objectFit:fit}}/>
     :<img src={url} alt="" draggable={false} style={{objectFit:fit,transform:motionCss(String(clip.motion||'none'),Number(clip.motion_strength??.15),progress),transformOrigin:'0 0'}}/>}</div>;
 }
 /** 자막 미리보기: 렌더(ASS)와 같은 크기 비율·위치 */
@@ -51,7 +52,7 @@ export function Monitor({showTransport=true}:{showTransport?:boolean}){
     <div className="monitor-stage" ref={boxRef}>
       <div className="monitor-frame" style={{width:fw,height:fh}}>
         {!tracks.length&&<div className="monitor-layer monitor-missing"><Film size={28}/><span>장면을 추가하면 여기에서 미리 볼 수 있어요</span></div>}
-        {layers.map(l=>{const t=tracks[l.k];const handle=transitionInto(doc,l.k+1).duration;return <Layer key={l.k} clip={t.clip} url={urls[t.clip.file]} local={playhead-t.start} progress={(playhead-t.start)/(t.duration+handle)} opacity={l.opacity} z={l.z} playing={playing}/>;})}
+        {layers.map(l=>{const t=tracks[l.k];const handle=transitionInto(doc,l.k+1).duration;return <Layer key={l.k} clip={t.clip} url={urls[t.clip.file]} poster={t.clip.poster?urls[t.clip.poster]:undefined} local={playhead-t.start} progress={(playhead-t.start)/(t.duration+handle)} opacity={l.opacity} z={l.z} playing={playing}/>;})}
         <SubtitleOverlay doc={doc} cue={cue} height={fh}/>
       </div>
     </div>

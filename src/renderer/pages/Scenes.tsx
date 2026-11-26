@@ -1,7 +1,9 @@
 import {useState,type DragEvent} from 'react';
-import {ArrowDown,ArrowUp,Film,Image as ImageIcon,Plus,RefreshCw,Trash2} from 'lucide-react';
+import {ArrowDown,ArrowUp,Film,Image as ImageIcon,ImagePlus,Library,Plus,RefreshCw,Replace,Trash2} from 'lucide-react';
 import {clipDuration,clipSpeed,MOTIONS,round,TRANSITIONS,videoSourceSpan} from '../../shared/project';
+import {importedItems,insertPosterBefore,mergeLibrary,sceneAlternatives,swapClipMedia} from '../../shared/media';
 import type {Clip} from '../../shared/types';
+import {useMediaActions} from '../components/MediaLibrary';
 import {Monitor} from '../components/Monitor';
 import {SidePanel} from '../components/Shell';
 import {Timeline} from '../components/Timeline';
@@ -13,7 +15,7 @@ export function useAddScenes(){
   return async()=>{
     const items=await window.compose.media.import('visual');if(!items.length)return;
     const visual=items.filter(i=>i.type==='image'||i.type==='video');
-    commit(p=>{for(const it of visual){const c:Clip={file:it.file,type:it.type as Clip['type'],label:it.name.replace(/\.[^.]+$/,''),motion:it.type==='image'?'zoom_in':'none',motion_strength:.08};if(it.type==='image')c.duration=4;else if(it.duration)c.source_duration=round(it.duration);p.clips.push(c);}return p;});
+    commit(p=>{p.media_library=mergeLibrary(p.media_library,importedItems(items));for(const it of visual){const c:Clip={file:it.file,type:it.type as Clip['type'],label:it.name.replace(/\.[^.]+$/,''),motion:it.type==='image'?'zoom_in':'none',motion_strength:.08};if(it.type==='image')c.duration=4;else if(it.duration)c.source_duration=round(it.duration);p.clips.push(c);}return p;});
     setSelectedClip(doc.clips.length);toast(`장면 ${visual.length}개를 추가했어요.`,'success');
   };
 }
@@ -27,8 +29,8 @@ export function ScenesMain(){
     <div className="scene-strip" aria-label="장면 목록">
       {tracks.map(t=><button type="button" key={t.index} draggable onDragStart={()=>setDrag(t.index)} onDragOver={(e:DragEvent)=>e.preventDefault()} onDrop={()=>{if(drag!=null)move(drag,t.index);setDrag(null);}}
         className={`strip-card ${selectedClip===t.index?'selected':''} ${drag===t.index?'dragging':''}`} onClick={()=>{setSelectedClip(t.index);seek(t.start);}} title="끌어서 순서를 바꿀 수 있어요">
-        <div className="strip-thumb">{t.clip.type==='image'&&urls[t.clip.file]?<img src={urls[t.clip.file]} alt=""/>:t.clip.type==='video'&&urls[t.clip.file]?<video src={urls[t.clip.file]} muted preload="metadata"/>:<div className="media-placeholder">{t.clip.type==='image'?<ImageIcon size={18}/>:<Film size={18}/>}</div>}
-          <span className="strip-index">{t.index+1}</span><span className={`strip-kind kind-${t.clip.type}`}>{t.clip.type==='image'?'이미지':'영상'}</span></div>
+        <div className="strip-thumb">{t.clip.type==='image'&&urls[t.clip.file]?<img src={urls[t.clip.file]} alt=""/>:t.clip.type==='video'&&t.clip.poster&&urls[t.clip.poster]?<img src={urls[t.clip.poster]} alt=""/>:t.clip.type==='video'&&urls[t.clip.file]?<video src={urls[t.clip.file]} muted preload="metadata"/>:<div className="media-placeholder">{t.clip.type==='image'?<ImageIcon size={18}/>:<Film size={18}/>}</div>}
+          <span className="strip-index">{t.index+1}</span><span className={`strip-kind kind-${t.clip.type}`}>{t.clip.type==='image'?'이미지':'영상'}</span>{sceneAlternatives(doc,t.clip).length>0&&<span className="strip-alt" title="같은 장면의 다른 이미지·영상이 보관함에 있어요">+{sceneAlternatives(doc,t.clip).length}</span>}</div>
         <div className="strip-info"><strong>{t.clip.label||fileName(t.clip.file)}</strong><small>{sec1(t.duration)}{t.clip.type==='image'&&t.clip.motion&&t.clip.motion!=='none'?` · ${MOTIONS.find(m=>m.id===t.clip.motion)?.label||''}`:''}</small></div>
       </button>)}
       <button type="button" className="strip-add" onClick={()=>void addScenes()}><Plus size={18}/><span>장면 추가</span><small>이미지·영상</small></button>
@@ -37,22 +39,35 @@ export function ScenesMain(){
   </div>;
 }
 export function ScenesPanel(){
-  const {doc,selectedClip,setSelectedClip,commit,toast}=useEditor();
+  const {doc,selectedClip,setSelectedClip,commit,toast,urls,openLibrary}=useEditor();
+  const act=useMediaActions();
   const clip=selectedClip!=null?doc.clips[selectedClip]:null;
   if(!clip||selectedClip==null)return <SidePanel title="장면 설정"><Empty title="장면을 선택해 주세요" description="아래 장면 카드나 타임라인의 장면을 누르면 길이·움직임·전환을 바꿀 수 있어요."/></SidePanel>;
   const i=selectedClip;const patch=(x:Partial<Clip>)=>commit(p=>{p.clips[i]={...p.clips[i],...x};return p;});
   const dur=clipDuration(clip);const span=videoSourceSpan(clip);
   const tr=clip.transition||doc.transition;
   const replace=async()=>{const [it]=await window.compose.media.import('visual',false);if(!it)return;if(it.type!=='image'&&it.type!=='video')return;
-    patch({file:it.file,type:it.type as Clip['type'],...(it.type==='video'?{source_duration:it.duration?round(it.duration):null,trim_start:0,trim_end:null,fit_duration:clip.type==='video'?clip.fit_duration:dur}:{duration:dur,fit_duration:null})});toast('장면 미디어를 바꿨어요.','success');};
+    commit(p=>{p.media_library=mergeLibrary(p.media_library,importedItems([it]));p.clips[i]=swapClipMedia(p.clips[i],{file:it.file,kind:it.type as Clip['type'],duration:it.duration},dur);return p;});toast('장면 미디어를 바꿨어요.','success');};
+  const alts=sceneAlternatives(doc,clip);
   return <SidePanel title={`장면 ${i+1} 설정`} head={<div className="panel-head-actions">
       <IconButton label="앞으로 옮기기" disabled={i===0} onClick={()=>{commit(p=>{const [c]=p.clips.splice(i,1);p.clips.splice(i-1,0,c);return p;});setSelectedClip(i-1);}}><ArrowUp size={15}/></IconButton>
       <IconButton label="뒤로 옮기기" disabled={i>=doc.clips.length-1} onClick={()=>{commit(p=>{const [c]=p.clips.splice(i,1);p.clips.splice(i+1,0,c);return p;});setSelectedClip(i+1);}}><ArrowDown size={15}/></IconButton>
       <IconButton label="장면 삭제" danger onClick={()=>{if(!confirm(`장면 ${i+1}을(를) 삭제할까요? (파일은 지우지 않아요)`))return;commit(p=>{p.clips.splice(i,1);return p;});setSelectedClip(null);}}><Trash2 size={15}/></IconButton></div>}>
-    <Section title="미디어">
+    <Section title="미디어" aside={clip.scene_id?<span className="chip" title="창작실 장면 ID">{clip.scene_id}</span>:undefined}>
       <div className="media-line"><span className={`strip-kind kind-${clip.type}`}>{clip.type==='image'?'이미지':'영상'}</span><span className="path-text" title={clip.file}>{fileName(clip.file)}</span></div>
+      {clip.type==='video'&&clip.poster&&<div className="media-line muted-text"><ImageIcon size={12}/><span className="path-text" title={clip.poster}>기준 이미지 · {fileName(clip.poster)}</span></div>}
       <Field label="장면 이름"><input value={clip.label||''} onChange={e=>patch({label:e.target.value})} placeholder="예: 01 출발"/></Field>
-      <Button kind="outline" size="sm" onClick={()=>void replace()}><RefreshCw size={14}/> 다른 이미지·영상으로 바꾸기</Button>
+      {alts.length>0&&<div className="alt-list" aria-label="같은 장면의 다른 미디어">
+        <span className="field-label">같은 장면의 다른 미디어 {alts.length}개</span>
+        {alts.slice(0,6).map(m=><button type="button" key={m.file} className="alt-item" onClick={()=>void act.replaceClip(i,m)} title={`이걸로 바꾸기 · ${m.file}`}>
+          <span className="alt-thumb">{m.kind==='image'&&urls[m.file]?<img src={urls[m.file]} alt=""/>:m.kind==='video'&&clip.poster&&urls[clip.poster]?<img src={urls[clip.poster]} alt=""/>:m.kind==='image'?<ImageIcon size={14}/>:<Film size={14}/>}</span>
+          <span className="alt-text"><strong>{fileName(m.file)}</strong><small>{m.kind==='image'?'이미지':'영상'}{m.role==='reference'?' · 기준 이미지':m.version&&m.version>1?` · v${m.version}`:''}</small></span><Replace size={13}/></button>)}
+      </div>}
+      <div className="btn-row">
+        <Button kind="outline" size="sm" onClick={()=>openLibrary({kind:'clip',index:i})}><Library size={14}/> 보관함에서 고르기</Button>
+        <Button kind="ghost" size="sm" onClick={()=>void replace()}><RefreshCw size={14}/> 파일에서 바꾸기</Button>
+      </div>
+      {clip.type==='video'&&clip.poster&&<Button kind="ghost" size="sm" onClick={()=>{commit(p=>insertPosterBefore(p,i,2));setSelectedClip(i+1);toast('기준 이미지를 앞 장면(2초)으로 넣고, 영상으로 서서히 바뀌게 했어요.','success');}} title="이미지로 시작해 같은 그림의 영상으로 자연스럽게 이어집니다"><ImagePlus size={14}/> 기준 이미지를 앞에 넣기 (이미지 → 영상)</Button>}
     </Section>
     <Section title="길이">
       {clip.type==='image'

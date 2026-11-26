@@ -1,12 +1,14 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
-import {Captions,Check,ChevronDown,Clapperboard,Film,FolderInput,Home as HomeIcon,Info,Mic2,Music2,Plus,Settings2,Sparkles,X} from 'lucide-react';
+import {Captions,Check,ChevronDown,Clapperboard,Film,FolderInput,Home as HomeIcon,Info,Library,Mic2,Music2,Plus,Settings2,Sparkles,X} from 'lucide-react';
 import {BRAND} from '../shared/brand';
 import {projectCues,timeline,totalDuration} from '../shared/project';
 import {STEP_HINTS,STEP_TITLES,STEPS,stepDone,stepGuide} from '../shared/steps';
 import type {ComposerProject,FfmpegStatus,ProjectState,StepId,View} from '../shared/types';
 import {ActionBar,DocHeader,SidePanel,StepLayout,type SaveState} from './components/Shell';
 import {Button} from './components/UI';
-import {EditorContext,type EditorState} from './editor';
+import {EditorContext,type EditorState,type LibraryMode} from './editor';
+import {MediaLibrary} from './components/MediaLibrary';
+import {librarySummary} from '../shared/media';
 import {usePreviewAudio} from './hooks/usePreviewAudio';
 import brandLogo from './assets/brand-logo.svg';
 import {DubbingStep} from './pages/Dubbing';
@@ -25,6 +27,7 @@ function BrandIcon({size=28}:{size?:number}){return <div className="brand-icon" 
 
 function ScenesStep({header,actionBar}:{header:ReactNode;actionBar:ReactNode}){return <StepLayout header={header} actionBar={actionBar} panel={<ScenesPanel/>}><ScenesMain/></StepLayout>;}
 function AddScenesButton(){const add=useAddScenes();return <Button size="sm" kind="outline" onClick={()=>void add()}><Plus size={14}/> 장면 추가</Button>;}
+function LibraryButton({doc,onOpen}:{doc:ComposerProject;onOpen:()=>void}){const n=doc.media_library?.length||0;return <Button size="sm" kind="outline" onClick={onOpen} title={n?`미디어 보관함 · ${librarySummary(doc.media_library||[])}`:'미디어 보관함'}><Library size={14}/> 미디어 보관함{n?` ${n}`:''}</Button>;}
 
 export default function App(){
   const [view,setView]=useState<View>('home');
@@ -36,6 +39,8 @@ export default function App(){
   const [playing,setPlayingState]=useState(false);const [startKey,setStartKey]=useState(0);const [startAt,setStartAt]=useState(0);
   const [selectedClip,setSelectedClip]=useState<number|null>(null);
   const [selectedCue,setSelectedCue]=useState<number|null>(null);
+  const [selectedAudio,setSelectedAudio]=useState<string|null>(null);
+  const [library,setLibrary]=useState<LibraryMode|null>(null);
   const [toastMsg,setToastMsg]=useState<{text:string;type:'info'|'error'|'success'}|null>(null);
   const [ffmpeg,setFfmpeg]=useState<FfmpegStatus|null>(null);
   const [render,setRender]=useState<RenderState>(IDLE_RENDER);
@@ -57,7 +62,7 @@ export default function App(){
   const undo=useCallback(()=>{setHistory(prev=>{if(!prev||!prev.past.length)return prev;const past=[...prev.past];const item=past.pop()!;return {present:item,past,future:[prev.present,...prev.future]};});scheduleSave();},[scheduleSave]);
   const redo=useCallback(()=>{setHistory(prev=>{if(!prev||!prev.future.length)return prev;const [item,...future]=prev.future;return {present:item,past:[...prev.past,prev.present],future};});scheduleSave();},[scheduleSave]);
 
-  const load=useCallback((s:ProjectState)=>{setOpened(s);setHistory({present:clone(s.data),past:[],future:[]});dirtyRef.current=false;setSaveState('saved');setSelectedClip(s.data.clips.length?0:null);setSelectedCue(null);setPlayhead(0);playheadRef.current=0;setPlayingState(false);setRender(IDLE_RENDER);setView('scenes');toast(s.notice||`프로젝트를 열었어요: ${s.data.title}`,'success');},[toast]);
+  const load=useCallback((s:ProjectState)=>{setOpened(s);setHistory({present:clone(s.data),past:[],future:[]});dirtyRef.current=false;setSaveState('saved');setSelectedClip(s.data.clips.length?0:null);setSelectedCue(null);setSelectedAudio(null);setLibrary(null);setPlayhead(0);playheadRef.current=0;setPlayingState(false);setRender(IDLE_RENDER);setView('scenes');toast(s.notice||`프로젝트를 열었어요: ${s.data.title}`,'success');},[toast]);
   const guard=async<T,>(op:()=>Promise<T>)=>{try{if(dirtyRef.current)await saveNow();return await op();}catch(e){toast(e instanceof Error?e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/,''):String(e),'error');return undefined;}};
   const openFolder=async()=>{const s=await guard(()=>window.compose.project.openFolder());if(s)load(s);};
   const openFile=async()=>{const s=await guard(()=>window.compose.project.open());if(s)load(s);};
@@ -71,7 +76,7 @@ export default function App(){
   usePreviewAudio({doc,urls,cues,playing,startAt,startKey,getPlayhead:()=>playheadRef.current});
 
   // ── 미디어 주소 ──
-  const fileKey=doc?[...doc.clips.map(c=>c.file),doc.bgm.file||'',...doc.dubbing.takes.map(t=>t.file)].join('|'):'';
+  const fileKey=doc?[...doc.clips.flatMap(c=>[c.file,c.poster||'']),doc.bgm.file||'',...doc.dubbing.takes.map(t=>t.file),...(doc.audio_cues||[]).map(c=>c.file),...(doc.media_library||[]).map(m=>m.file)].join('|'):'';
   useEffect(()=>{if(!opened||!fileKey)return;let dead=false;const files=[...new Set(fileKey.split('|').filter(Boolean))];void window.compose.media.urls(files).then(m=>{if(!dead)setUrls(m);}).catch(()=>{});return()=>{dead=true;};},[fileKey,opened?.path]);
 
   useEffect(()=>{void window.compose.ffmpeg.status().then(setFfmpeg).catch(()=>{});void window.compose.info().then(i=>setVersion(i.version)).catch(()=>{});},[]);
@@ -88,12 +93,13 @@ export default function App(){
     if(e.ctrlKey&&k==='s'){e.preventDefault();void saveNow();}
     else if(e.ctrlKey&&k==='z'&&!inField){e.preventDefault();if(e.shiftKey)redo();else undo();}
     else if(e.ctrlKey&&k==='y'&&!inField){e.preventDefault();redo();}
-    else if(e.key===' '&&!inField&&doc&&view!=='dubbing'&&view!=='export'&&view!=='home'&&view!=='settings'&&!(e.target as HTMLElement)?.closest('button')){e.preventDefault();setPlaying(!playing);}};
-    window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[saveNow,undo,redo,doc,view,playing,setPlaying]);
+    else if(e.key===' '&&!inField&&doc&&!library&&view!=='dubbing'&&view!=='export'&&view!=='home'&&view!=='settings'&&!(e.target as HTMLElement)?.closest('button')){e.preventDefault();setPlaying(!playing);}};
+    window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[saveNow,undo,redo,doc,view,playing,setPlaying,library]);
   useEffect(()=>{const fn=(e:BeforeUnloadEvent)=>{if(dirtyRef.current){void saveNow();}void e;};window.addEventListener('beforeunload',fn);return()=>window.removeEventListener('beforeunload',fn);},[saveNow]);
 
   const go=(v:View)=>{if(v!=='home'&&v!=='settings'&&!doc){toast('먼저 창작실 작품이나 프로젝트를 열어 주세요.');return;}setPlayingState(false);setView(v);};
-  const editor:EditorState|null=doc?{doc,commit,tracks,total,cues,urls,playhead,seek,playing,setPlaying,selectedClip,setSelectedClip,selectedCue,setSelectedCue,toast}:null;
+  const openLibrary=useCallback((mode:LibraryMode={kind:'browse'})=>{setPlayingState(false);setLibrary(mode);},[]);
+  const editor:EditorState|null=doc?{doc,commit,tracks,total,cues,urls,playhead,seek,playing,setPlaying,selectedClip,setSelectedClip,selectedCue,setSelectedCue,toast,openLibrary,selectedAudio,setSelectedAudio}:null;
   const projectTitle=doc?.title||'';
   const header=(step:StepId,actions?:ReactNode)=>{const Icon=ICONS[step];return <DocHeader icon={<Icon size={17}/>} title={STEP_TITLES[step]} projectTitle={projectTitle}
     chips={<span className="chip">{doc!.output.width}×{doc!.output.height}</span>} saveState={saveState} actions={actions}
@@ -106,10 +112,10 @@ export default function App(){
   if(view==='home')body=<div className="step-layout"><DocHeader icon={<HomeIcon size={17}/>} title="시작하기"/><div className="workspace"><div className="workspace-main page-scroll"><Home onOpenFolder={()=>void openFolder()} onOpenFile={()=>void openFile()} onOpenPath={p=>void openPath(p)} onNew={()=>void newProject()}/></div></div></div>;
   else if(view==='settings')body=<div className="step-layout"><DocHeader icon={<Settings2 size={17}/>} title="환경 설정"/><div className="workspace"><div className="workspace-main page-scroll"><Settings ffmpeg={ffmpeg} onFfmpeg={setFfmpeg} toast={toast}/></div></div></div>;
   else if(!doc)body=<StepLayout header={<DocHeader icon={<Info size={17}/>} title="프로젝트 없음"/>} panel={<SidePanel title="안내"><p/></SidePanel>}><div/></StepLayout>;
-  else if(view==='scenes')body=<ScenesStep header={header('scenes',<AddScenesButton/>)} actionBar={bar('scenes')}/>;
+  else if(view==='scenes')body=<ScenesStep header={header('scenes',<><LibraryButton doc={doc} onOpen={()=>openLibrary()}/><AddScenesButton/></>)} actionBar={bar('scenes')}/>;
   else if(view==='dubbing')body=<DubbingStep header={header('dubbing')} actionBar={bar('dubbing')} goto={s=>go(s)}/>;
   else if(view==='subtitles')body=<SubtitlesStep header={header('subtitles')} actionBar={bar('subtitles')}/>;
-  else if(view==='music')body=<MusicStep header={header('music')} actionBar={bar('music')}/>;
+  else if(view==='music')body=<MusicStep header={header('music',<LibraryButton doc={doc} onOpen={()=>openLibrary({kind:'music'})}/>)} actionBar={bar('music')}/>;
   else body=<ExportStep header={header('export')} actionBar={bar('export')} render={render} onCancel={()=>void window.compose.render.cancel()} ffmpeg={ffmpeg} openSettings={()=>go('settings')}/>;
 
   const done=doc?STEPS.filter(s=>stepDone(doc,s)).length:0;
@@ -136,6 +142,7 @@ export default function App(){
           <div className="status-right">{render.busy&&<button className="status-job" onClick={()=>go('export')}><Sparkles size={12}/> 영상 만드는 중 {Math.round(render.progress*100)}%</button>}<span>FFmpeg {ffmpeg?.ok?'준비됨':'확인 필요'}</span><span>{BRAND.nameKo} v{version||'—'}</span></div>
         </footer>
       </div>
+      {library&&doc&&<MediaLibrary mode={library} onClose={()=>setLibrary(null)}/>}
       {toastMsg&&<div className={`toast toast-${toastMsg.type}`} role="status"><Info size={17}/><span>{toastMsg.text}</span><button className="icon-btn" onClick={()=>setToastMsg(null)} aria-label="닫기"><X size={16}/></button></div>}
     </div>
   </EditorContext.Provider>;

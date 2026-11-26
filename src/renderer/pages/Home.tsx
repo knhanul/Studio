@@ -12,7 +12,7 @@ export function Home({onOpenFolder,onOpenFile,onOpenPath,onNew}:{onOpenFolder:()
     <section className="home-hero">
       <div><div className="eyebrow">고모 미디어공방 · 고모 창작실과 한 세트</div><h1>창작실에서 만든 작품에<br/>목소리를 입혀 영상으로 완성해요</h1><p>장면·자막·배경음악이 담긴 창작실 제작 패키지를 불러와 더빙하고, 바로 MP4 영상으로 내보낼 수 있어요.</p></div>
       <div className={`drop-zone ${over?'is-over':''}`} onDragOver={e=>{e.preventDefault();setOver(true);}} onDragLeave={()=>setOver(false)} onDrop={drop}>
-        <FolderInput size={30}/><strong>창작실 제작 패키지 폴더를 여기에 끌어다 놓으세요</strong><small>창작실 「더빙 전달」에서 내보낸 폴더 (composer_project.json · gomo-handoff.json)</small>
+        <FolderInput size={30}/><strong>창작실 제작 패키지 폴더를 여기에 끌어다 놓으세요</strong><small>창작실 「더빙 전달」에서 내보낸 폴더 — 장면별 이미지·영상·여러 배경음악을 미디어 보관함으로 모두 불러와요</small>
         <div className="btn-row center"><Button onClick={onOpenFolder}><FolderInput size={16}/> 창작실 작품 불러오기</Button><Button kind="outline" onClick={onOpenFile}><FileJson size={16}/> 프로젝트 파일 열기</Button><Button kind="ghost" onClick={onNew}><Plus size={16}/> 빈 프로젝트</Button></div>
       </div>
     </section>

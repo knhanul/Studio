@@ -7,7 +7,8 @@ import {pathToFileURL} from 'node:url';
 import {EngineController,EngineConfig} from './engine';
 import {probeMedia,renderProject,resolveFfmpeg} from './ffmpeg';
 import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,normalizeProject,toSrt} from '../shared/project';
-import type {ComposerProject,FfmpegStatus,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
+import {attachLibrary,fromCreatorProject,isCreatorProject,libraryFromCreator,libraryFromFiles,librarySummary,type CreatorProject} from '../shared/media';
+import type {ComposerProject,FfmpegStatus,MediaItem,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
 
 protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:true}}]);
 let win:BrowserWindow|null=null;
@@ -33,7 +34,8 @@ async function readRecent():Promise<RecentProject[]>{try{const list=JSON.parse(a
 async function remember(file:string,title:string){const list=(await readRecent()).filter(r=>path.resolve(r.path)!==path.resolve(file));list.unshift({path:file,title,openedAt:new Date().toISOString()});await atomicWrite(recentPath(),JSON.stringify(list.slice(0,12),null,2)).catch(()=>{});}
 
 async function save(data:ComposerProject,target=currentPath):Promise<ProjectState>{if(!target)throw new Error('저장 경로가 없습니다.');const doc=normalizeProject(data);if(doc.version!==2)throw new Error('v1 프로젝트는 구버전에서 v2로 변환 후 저장하세요.');await atomicWrite(target,JSON.stringify(doc,null,2));currentPath=target;await remember(target,doc.title);return {path:target,data:doc,updatedAt:new Date().toISOString()};}
-function remapMedia(data:ComposerProject,oldBase:string,newBase:string){const rel=(s?:string|null)=>s?path.relative(newBase,path.resolve(oldBase,s)).replace(/\\/g,'/'):s;return {...data,clips:data.clips.map(c=>({...c,file:rel(c.file)||c.file})),bgm:{...data.bgm,file:rel(data.bgm.file)},subtitle:{...data.subtitle,file:rel(data.subtitle.file)},dubbing:{...data.dubbing,takes:data.dubbing.takes.map(t=>({...t,file:rel(t.file)||t.file}))}};}
+function remapMedia(data:ComposerProject,oldBase:string,newBase:string){const rel=(s?:string|null)=>s?path.relative(newBase,path.resolve(oldBase,s)).replace(/\\/g,'/'):s;return {...data,clips:data.clips.map(c=>({...c,file:rel(c.file)||c.file,...(c.poster?{poster:rel(c.poster)}:{})})),bgm:{...data.bgm,file:rel(data.bgm.file)},
+  ...(data.audio_cues?{audio_cues:data.audio_cues.map(c=>({...c,file:rel(c.file)||c.file}))}:{}),...(data.media_library?{media_library:data.media_library.map(m=>({...m,file:rel(m.file)||m.file}))}:{}),subtitle:{...data.subtitle,file:rel(data.subtitle.file)},dubbing:{...data.dubbing,takes:data.dubbing.takes.map(t=>({...t,file:rel(t.file)||t.file}))}};}
 function mediaUrl(file:string){if(!file)return '';const resolved=path.resolve(dir(),file);if(!existsSync(resolved))return '';if(!['image','video','audio'].includes(kindOf(resolved)))return '';const id=randomUUID();mediaMap.set(id,resolved);return `gomo-media://media/${id}`;}
 
 /** 영상 클립의 원본 길이를 FFmpeg로 채운다 (없을 때만) */
@@ -48,30 +50,67 @@ async function fillSubtitles(doc:ComposerProject,base:string):Promise<boolean>{
   for(const name of [doc.subtitle.file,'captions.srt'].filter(Boolean) as string[]){const f=path.resolve(base,name);if(existsSync(f)){const items=fromSrt(await readFile(f,'utf8'));if(items.length){doc.subtitle.items=items;return true;}}}
   return false;
 }
+/** 창작실 project.json (creator.project.v1) — 이미지·영상·기준 이미지·여러 배경음악 정보가 모두 들어 있다 */
+async function readCreator(folder:string):Promise<CreatorProject|null>{
+  const f=path.join(folder,'project.json');if(!existsSync(f))return null;
+  try{const raw=JSON.parse((await readFile(f,'utf8')).replace(/^\uFEFF/,''));return isCreatorProject(raw)?raw:null;}catch{return null;}
+}
+/** 폴더 안 미디어 파일 (assets/ · media/ 아래, 최대 3단계) */
+async function scanMedia(base:string):Promise<string[]>{
+  const out:string[]=[];
+  const walk=async(rel:string,depth:number)=>{if(depth>3||out.length>2000)return;let entries;try{entries=await readdir(path.join(base,rel),{withFileTypes:true});}catch{return;}
+    for(const e of entries){const r=rel?`${rel}/${e.name}`:e.name;if(e.isDirectory())await walk(r,depth+1);else if(['image','video','audio'].includes(kindOf(e.name)))out.push(r);}};
+  for(const top of ['assets','media'])await walk(top,1);
+  return out;
+}
+/** 미디어 보관함: 창작실 project.json 정보 + 폴더에 실제로 있는 파일 (없어진 파일은 뺀다) */
+async function buildLibrary(base:string,doc?:ComposerProject):Promise<MediaItem[]>{
+  const creator=await readCreator(base);
+  const scenes=creator?.scenes||doc?.clips.filter(c=>c.scene_id).map(c=>({id:String(c.scene_id),title:c.label}))||[];
+  const fromCreator=creator?libraryFromCreator(creator):[];
+  const files=libraryFromFiles(await scanMedia(base),scenes);
+  return [...fromCreator,...files].filter(m=>existsSync(path.resolve(base,m.file)));
+}
+async function withLibrary(doc:ComposerProject,base:string):Promise<ComposerProject>{
+  const kept=(doc.media_library||[]).filter(m=>existsSync(path.resolve(base,m.file)));
+  return attachLibrary({...doc,media_library:kept},await buildLibrary(base,doc));
+}
+const libraryNote=(d:ComposerProject)=>{const t=librarySummary(d.media_library||[]);return t?` 미디어 보관함: ${t}.`:'';};
 async function openJson(file:string):Promise<ProjectState>{
   const raw=JSON.parse((await readFile(file,'utf8')).replace(/^\uFEFF/,''));
-  if(isCreatorHandoff(raw))return openFolder(path.dirname(file));
-  const doc=normalizeProject(raw);if(doc.version!==2)throw new Error('프로젝트 v1은 기존 영상 합성기에서 v2로 마이그레이션한 다음 여세요.');
+  if(isCreatorHandoff(raw)||isCreatorProject(raw))return openFolder(path.dirname(file));
+  let doc=normalizeProject(raw);if(doc.version!==2)throw new Error('프로젝트 v1은 기존 영상 합성기에서 v2로 마이그레이션한 다음 여세요.');
   const base=path.dirname(file);const loadedSrt=await fillSubtitles(doc,base);await fillVideoDurations(doc,base);
+  doc=await withLibrary(doc,base);
   currentPath=file;await remember(file,doc.title);
   return {path:file,data:doc,updatedAt:new Date().toISOString(),notice:loadedSrt?'자막 파일(SRT)을 함께 불러왔어요.':undefined};
 }
 /** 고모 창작실 제작 패키지 폴더 열기 */
 async function openFolder(folder:string):Promise<ProjectState>{
   const composer=path.join(folder,'composer_project.json');
-  if(existsSync(composer)){const s=await openJson(composer);return {...s,notice:`고모 창작실 작품 「${s.data.title}」을(를) 불러왔어요.${s.notice?' '+s.notice:''}`};}
+  if(existsSync(composer)){const s=await openJson(composer);return {...s,notice:`고모 창작실 작품 「${s.data.title}」을(를) 불러왔어요.${libraryNote(s.data)}${s.notice?' '+s.notice:''}`};}
+  const creator=await readCreator(folder);
+  if(creator){
+    const {project,skipped,fallbacks}=fromCreatorProject(creator);
+    if(!project.clips.length)throw new Error('창작실 패키지에 이미지·영상이 있는 장면이 없어요. 창작실 미디어 보관함에서 장면 미디어를 먼저 만들어 주세요.');
+    await fillSubtitles(project,folder);await fillVideoDurations(project,folder);
+    const doc=await withLibrary(project,folder);
+    const s=await save(doc,composer);
+    const extra=[fallbacks.length?`미디어가 연결되지 않은 장면 ${fallbacks.length}개는 같은 장면의 파일로 채웠어요.`:'',skipped.length?`미디어가 없는 장면 ${skipped.length}개(${skipped.slice(0,4).join(', ')})는 빠졌어요.`:''].filter(Boolean).join(' ');
+    return {...s,data:doc,notice:`고모 창작실 작품 「${doc.title}」을(를) 편집 프로젝트로 바꿨어요.${libraryNote(doc)}${extra?' '+extra:''}`};
+  }
   const handoffFile=path.join(folder,'gomo-handoff.json');
   if(existsSync(handoffFile)){
     const raw=JSON.parse((await readFile(handoffFile,'utf8')).replace(/^\uFEFF/,''));
     if(!isCreatorHandoff(raw))throw new Error('gomo-handoff.json 형식을 읽을 수 없어요.');
-    const doc=fromCreatorHandoff(raw);
+    let doc=fromCreatorHandoff(raw);
     if(!doc.clips.length)throw new Error('창작실 패키지에 이미지·영상이 연결된 장면이 없어요. 창작실 미디어 보관함에서 장면 미디어를 먼저 연결해 주세요.');
-    await fillSubtitles(doc,folder);await fillVideoDurations(doc,folder);
-    const s=await save(doc,composer);return {...s,notice:`고모 창작실 패키지를 편집 프로젝트로 바꿔 composer_project.json으로 저장했어요.`};
+    await fillSubtitles(doc,folder);await fillVideoDurations(doc,folder);doc=await withLibrary(doc,folder);
+    const s=await save(doc,composer);return {...s,notice:`고모 창작실 패키지를 편집 프로젝트로 바꿔 composer_project.json으로 저장했어요.${libraryNote(doc)}`};
   }
   const jsons=(await readdir(folder).catch(()=>[] as string[])).filter(n=>/^(project|.*composer.*)\.json$/i.test(n));
   for(const n of jsons){try{return await openJson(path.join(folder,n));}catch{/* 다음 후보 */}}
-  throw new Error('이 폴더에서 고모 창작실 패키지(composer_project.json · gomo-handoff.json)를 찾지 못했어요.');
+  throw new Error('이 폴더에서 고모 창작실 패키지(composer_project.json · project.json · gomo-handoff.json)를 찾지 못했어요.');
 }
 async function openAny(target:string):Promise<ProjectState>{const s=await stat(target);return s.isDirectory()?openFolder(target):openJson(target);}
 async function uniqueName(folder:string,base:string,ext:string){await mkdir(folder,{recursive:true});const used=new Set((await readdir(folder)).map(s=>s.toLowerCase()));let n=1;while(used.has(`${base}${n}.${ext}`.toLowerCase()))n++;return `${base}${n}.${ext}`;}
@@ -108,6 +147,7 @@ function registerIpc(){
     return results;
   });
   ipcMain.handle('media:urls',(_e,files:string[])=>{const out:Record<string,string>={};for(const file of files){out[file]=mediaUrl(file);}return out;});
+  ipcMain.handle('media:library',async()=>{ensureProject();return buildLibrary(dir());});
   ipcMain.handle('media:probe',async(_e,file:string)=>{const st=ffmpeg();if(!st.ok)return {duration:null,hasAudio:false};return probeMedia(st.path,path.resolve(dir(),file));});
   ipcMain.handle('take:save',async(_e,cue:number|null,data:ArrayBuffer)=>{ensureProject();const folder=path.join(dir(),'takes');const name=await uniqueName(folder,cue?`line_${String(cue).padStart(4,'0')}_v`:'free_v','wav');await writeFile(path.join(folder,name),Buffer.from(data));return `takes/${name}`;});
   ipcMain.handle('take:import',async(_e,cue:number)=>{ensureProject();const r=await dialog.showOpenDialog(win!,{title:'녹음해 둔 음성 파일 선택',properties:['openFile'],filters:[{name:'오디오',extensions:AUDIO}]});if(r.canceled)return null;const src=r.filePaths[0];const folder=path.join(dir(),'takes');const name=await uniqueName(folder,`line_${String(cue).padStart(4,'0')}_file_v`,extOf(src)||'wav');await copyFile(src,path.join(folder,name));const rel=`takes/${name}`;const duration=ffmpeg().ok?(await probeMedia(ffmpeg().path,path.join(folder,name))).duration:null;return {file:rel,duration};});

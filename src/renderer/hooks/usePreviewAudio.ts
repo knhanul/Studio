@@ -1,5 +1,6 @@
 import {useEffect,useRef} from 'react';
 import {duckFactor,takeLength,takeSpan} from '../../shared/project';
+import {layerFade,musicLayers} from '../../shared/media';
 import type {ComposerProject,SubtitleItem} from '../../shared/types';
 
 const buffers=new Map<string,Promise<AudioBuffer|null>>();
@@ -25,19 +26,19 @@ export function usePreviewAudio({doc,urls,cues,playing,startAt,startKey,getPlayh
       const src=ctx.createBufferSource();src.buffer=buf;const g=ctx.createGain();g.gain.value=t.volume==null?1:Number(t.volume);src.connect(g).connect(voiceGain);
       src.start(ctx.currentTime+Math.max(0,s.start-now),(Number(t.trim_start)||0)+skip,len-skip);sources.push(src);
     }));
-    let audio:HTMLAudioElement|null=null;let raf=0;
-    const b=d.bgm;const burl=b.file?urls[b.file]:'';
-    if(burl&&Number(b.volume??.3)>0){
-      audio=new Audio(burl);audio.loop=b.loop!==false;const start=Number(b.start_offset)||0;
-      const begin=()=>{if(!audio||dead)return;const pos=Math.max(0,getPlayhead()-start)+(Number(b.file_start)||0);try{audio.currentTime=audio.duration&&audio.loop?pos%audio.duration:pos;}catch{/* */}void audio.play().catch(()=>{});};
-      if(audio.readyState>=1)begin();else audio.addEventListener('loadedmetadata',begin,{once:true});
-      const duck=b.duck_under_voice!==false?duckFactor(b):1;
-      const tick=()=>{if(!audio)return;const now=getPlayhead();const voice=spans.some(({s})=>now>=s.start&&now<s.end);
-        const fi=Number(b.fade_in??1),since=now-start;const fade=fi>0?Math.min(1,Math.max(0,since/fi)):1;
-        audio.volume=Math.max(0,Math.min(1,Number(b.volume??.3)*(voice?duck:1)*fade));raf=requestAnimationFrame(tick);};
-      raf=requestAnimationFrame(tick);
-    }
-    return()=>{dead=true;cancelAnimationFrame(raf);for(const s of sources){try{s.stop();}catch{/* */}}voiceGain.disconnect();if(audio){audio.pause();audio.src='';}};
+    // 배경음악 + 추가 소리(음악 바꾸기·효과음): 구간 안에서만 재생, 페이드·자동 줄이기 근사
+    let raf=0;const duck=duckFactor(d.bgm);
+    const players=musicLayers(d).filter(l=>urls[l.file]).map(l=>{const a=new Audio(urls[l.file]);a.loop=l.loop;a.preload='auto';return {l,a,on:false};});
+    const tick=()=>{const now=getPlayhead();const voice=spans.some(({s})=>now>=s.start&&now<s.end);
+      for(const p of players){const inside=now>=p.l.start&&now<p.l.end;
+        if(inside&&!p.on){p.on=true;const a=p.a,l=p.l;
+          const begin=()=>{if(dead||!p.on)return;const pos=getPlayhead()-l.start+l.file_start;try{a.currentTime=a.duration&&l.loop?pos%a.duration:pos;}catch{/* 아직 못 읽음 */}void a.play().catch(()=>{});};
+          if(a.readyState>=1)begin();else a.addEventListener('loadedmetadata',begin,{once:true});}
+        else if(!inside&&p.on){p.on=false;p.a.pause();}
+        if(p.on)p.a.volume=Math.max(0,Math.min(1,p.l.volume*(voice&&p.l.duck?duck:1)*layerFade(p.l,now)));}
+      raf=requestAnimationFrame(tick);};
+    if(players.length)raf=requestAnimationFrame(tick);
+    return()=>{dead=true;cancelAnimationFrame(raf);for(const s of sources){try{s.stop();}catch{/* */}}voiceGain.disconnect();for(const p of players){p.a.pause();p.a.src='';}};
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[playing,startKey]);
 }
