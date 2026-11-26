@@ -5,6 +5,7 @@
  *  이미지 움직임은 perspective 필터의 소수점 좌표를 써서 떨림이 없다. */
 import type {ComposerProject,SubtitleItem} from './types';
 import {clipDuration,clipSpeed,projectCues,takePosition,transitionInto} from './project';
+import {musicLayers} from './media';
 
 export const AUDIO_RATE=48000;
 export interface MediaInfo{duration:number|null;hasAudio:boolean}
@@ -158,21 +159,29 @@ export function buildAssembly(p:ComposerProject,o:RenderOptions,clipFiles:string
   });
   let voice:string|null=null;
   if(voices.length){g.push(`${voices.join('')}${voices.length>1?`amix=inputs=${voices.length}:normalize=0:duration=longest,`:''}apad=whole_dur=${ts},atrim=duration=${ts}[voice]`);voice='voice';}
-  const b=p.bgm;const bvol=b.volume==null?.3:Number(b.volume);const bstart=Number(b.start_offset)||0;
-  if(b.file&&bvol>0&&bstart<total){
-    const src=o.resolve(b.file);const info=o.info(src);const loop=b.loop!==false;
-    if(loop)args.push('-stream_loop','-1');args.push('-i',src);
-    let avail=total-bstart;const fstart=Number(b.file_start)||0;
-    if(!loop&&info?.duration)avail=Math.min(avail,Math.max(.1,info.duration-fstart));
-    const chain=[...(fstart>0?[`atrim=start=${f(fstart)}`]:[]),'asetpts=PTS-STARTPTS',`aresample=${AUDIO_RATE}`,'aformat=sample_fmts=fltp:channel_layouts=stereo',`atrim=duration=${f(avail)}`];
-    const bfi=b.fade_in==null?1:Number(b.fade_in),bfo=b.fade_out==null?2:Number(b.fade_out);
-    if(bfi>0)chain.push(`afade=t=in:st=0:d=${f(Math.min(bfi,avail))}`);
-    if(bfo>0){const fo=Math.min(bfo,avail);chain.push(`afade=t=out:st=${f(avail-fo)}:d=${f(fo)}`);}
-    chain.push(`volume=${f(bvol)}`);const ms=Math.round(bstart*1000);if(ms>0)chain.push(`adelay=delays=${ms}:all=1`);
-    chain.push(`apad=whole_dur=${ts}`,`atrim=duration=${ts}`);g.push(`[${idx}:a]${chain.join(',')}[bgm]`);idx++;
-    if(voice&&b.duck_under_voice!==false){g.push(`[voice]asplit=2[voicemix][voicesc]`);g.push(`[bgm][voicesc]sidechaincompress=threshold=0.02:ratio=${f(Number(b.duck_ratio)||6)}:attack=20:release=400[bgmd]`);voice='voicemix';mix.push('[bgmd]');}
-    else mix.push('[bgm]');
+  // 배경음악 + 추가 소리(장면별 음악 바꾸기·효과음). 자동 줄이기가 켜진 소리는 한 묶음으로 목소리에 맞춰 줄인다
+  const ducked:string[]=[],plain:string[]=[];
+  musicLayers(p,total).forEach((l,j)=>{
+    if(l.start>=total||l.end-l.start<.05)return;
+    const src=o.resolve(l.file);const info=o.info(src);
+    if(l.loop)args.push('-stream_loop','-1');args.push('-i',src);
+    let avail=Math.min(total,l.end)-l.start;
+    if(!l.loop&&info?.duration)avail=Math.min(avail,Math.max(.1,info.duration-l.file_start));
+    const chain=[...(l.file_start>0?[`atrim=start=${f(l.file_start)}`]:[]),'asetpts=PTS-STARTPTS',`aresample=${AUDIO_RATE}`,'aformat=sample_fmts=fltp:channel_layouts=stereo',`atrim=duration=${f(avail)}`];
+    if(l.fade_in>0)chain.push(`afade=t=in:st=0:d=${f(Math.min(l.fade_in,avail))}`);
+    if(l.fade_out>0){const fo=Math.min(l.fade_out,avail);chain.push(`afade=t=out:st=${f(avail-fo)}:d=${f(fo)}`);}
+    chain.push(`volume=${f(l.volume)}`);const ms=Math.round(l.start*1000);if(ms>0)chain.push(`adelay=delays=${ms}:all=1`);
+    const name=l.kind==='bgm'?'bgm':`snd${j}`;
+    chain.push(`apad=whole_dur=${ts}`,`atrim=duration=${ts}`);g.push(`[${idx}:a]${chain.join(',')}[${name}]`);idx++;
+    (l.duck?ducked:plain).push(`[${name}]`);
+  });
+  if(ducked.length){
+    let bus=ducked[0];
+    if(ducked.length>1){g.push(`${ducked.join('')}amix=inputs=${ducked.length}:normalize=0:duration=first[musicbus]`);bus='[musicbus]';}
+    if(voice){g.push(`[voice]asplit=2[voicemix][voicesc]`);g.push(`${bus}[voicesc]sidechaincompress=threshold=0.02:ratio=${f(Number(p.bgm.duck_ratio)||6)}:attack=20:release=400[bgmd]`);voice='voicemix';mix.push('[bgmd]');}
+    else mix.push(bus);
   }
+  mix.push(...plain);
   if(voice)mix.push(`[${voice}]`);
   const afs=fa.length?','+fa.join(','):'';
   if(mix.length>1)g.push(`${mix.join('')}amix=inputs=${mix.length}:normalize=0:duration=first:dropout_transition=0,alimiter=limit=0.97:level=0,atrim=duration=${ts}${afs}[aout]`);

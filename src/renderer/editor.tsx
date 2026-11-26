@@ -11,7 +11,11 @@ export interface EditorState{
   selectedClip:number|null;setSelectedClip:(i:number|null)=>void;
   selectedCue:number|null;setSelectedCue:(index:number|null)=>void;
   toast:(msg:string,type?:'info'|'error'|'success')=>void;
+  /** 미디어 보관함 열기 — clip: 그 장면 미디어 바꾸기 · music/effect: 소리 고르기 */
+  openLibrary:(mode?:LibraryMode)=>void;
+  selectedAudio:string|null;setSelectedAudio:(id:string|null)=>void;
 }
+export type LibraryMode={kind:'browse'}|{kind:'clip';index:number}|{kind:'bgm'}|{kind:'music'}|{kind:'effect'};
 export const EditorContext=createContext<EditorState|null>(null);
 export function useEditor(){const v=useContext(EditorContext);if(!v)throw new Error('EditorContext 없음');return v;}
 export const fileName=(file:string)=>file.split(/[\\/]/).pop()||file;

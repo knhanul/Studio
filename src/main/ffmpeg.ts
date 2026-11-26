@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type {ComposerProject,FfmpegStatus} from '../shared/types';
 import {buildRenderPlan,parseMediaInfo,parseProgressSeconds,type MediaInfo} from '../shared/render';
+import {musicLayers} from '../shared/media';
 
 function bundledPath():string{
   try{
@@ -61,8 +62,10 @@ export async function renderProject(project:ComposerProject,o:RenderJobOptions):
   const work=await mkdtemp(path.join(os.tmpdir(),'gomo-render-'));
   try{
     const resolve=(rel:string)=>path.resolve(o.baseDir,rel);
-    const files=[...new Set([...project.clips.filter(c=>c.type==='video').map(c=>resolve(c.file)),...(project.bgm.file?[resolve(project.bgm.file)]:[])])];
-    const missing=[...project.clips.map(c=>resolve(c.file)),...project.dubbing.takes.map(t=>resolve(t.file)),...(project.bgm.file&&Number(project.bgm.volume??.3)>0?[resolve(project.bgm.file)]:[])].filter(f=>!existsSync(f));
+    const sounds=musicLayers(project).map(l=>resolve(l.file));
+    const files=[...new Set([...project.clips.filter(c=>c.type==='video').map(c=>resolve(c.file)),...sounds])];
+    if(project.clips.some(c=>!c.file))throw new Error('미디어가 비어 있는 장면이 있어요. 장면 구성에서 이미지·영상을 넣어 주세요.');
+    const missing=[...new Set([...project.clips.map(c=>resolve(c.file)),...project.dubbing.takes.map(t=>resolve(t.file)),...sounds])].filter(f=>!existsSync(f));
     if(missing.length)throw new Error(`파일을 찾을 수 없어요: ${missing.slice(0,3).map(f=>path.basename(f)).join(', ')}${missing.length>3?` 외 ${missing.length-3}개`:''}`);
     o.onProgress?.(0,'미디어 정보를 읽는 중');
     const info=new Map<string,MediaInfo>();

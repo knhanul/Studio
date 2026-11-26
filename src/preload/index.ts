@@ -1,5 +1,5 @@
 import {contextBridge,ipcRenderer,webUtils} from 'electron';
-import type {ComposerProject,SubtitleItem,EngineStatus,FfmpegStatus,ProjectState,RecentProject,RenderEvent} from '../shared/types';
+import type {ComposerProject,MediaItem,SubtitleItem,EngineStatus,FfmpegStatus,ProjectState,RecentProject,RenderEvent} from '../shared/types';
 export const api={
   project:{
     create:(title?:string):Promise<ProjectState>=>ipcRenderer.invoke('project:new',title),
@@ -16,6 +16,8 @@ export const api={
   },
   media:{
     import:(kind:'visual'|'audio'|'any'='any',multi=true):Promise<{file:string;type:string;name:string;duration?:number|null}[]>=>ipcRenderer.invoke('media:import',kind,multi),
+    /** 작업 폴더를 다시 읽어 미디어 보관함 항목 (창작실 project.json + assets/ · media/ 파일) */
+    library:():Promise<MediaItem[]>=>ipcRenderer.invoke('media:library'),
     urls:(paths:string[]):Promise<Record<string,string>>=>ipcRenderer.invoke('media:urls',paths),
     probe:(file:string):Promise<{duration:number|null;hasAudio:boolean}>=>ipcRenderer.invoke('media:probe',file)
   },
