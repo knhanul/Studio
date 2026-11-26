@@ -1,174 +1,142 @@
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import type {CSSProperties,ReactNode,DragEvent} from 'react';
-import {Activity,AudioLines,ArrowDown,ArrowLeft,ArrowRight,ArrowUp,BookOpen,Check,CheckCircle2,ChevronDown,Clapperboard,Clock3,CloudOff,Download,FileJson,FileText,Film,FolderOpen,HardDrive,Headphones,Image as ImageIcon,Info,Layers3,LayoutDashboard,Maximize,Mic2,Minus,MoreHorizontal,Music2,Pause,Play,Plus,RotateCcw,Save,Scissors,Settings2,ShieldAlert,SlidersHorizontal,Sparkles,Square,Trash2,Undo2,Redo2,Upload,Volume2,WandSparkles,X,ZoomIn,ZoomOut} from 'lucide-react';
+import {useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
+import {Captions,Check,ChevronDown,Clapperboard,Film,FolderInput,Home as HomeIcon,Info,Mic2,Music2,Plus,Settings2,Sparkles,X} from 'lucide-react';
 import {BRAND} from '../shared/brand';
-import {clipDuration,createProject,fmt,fromSrt,normalizeProject,timeline,toSrt,totalDuration} from '../shared/project';
-import type {Clip,ComposerProject,EditorMode,EngineEvent,EngineStatus,ProjectState,SubtitleItem} from '../shared/types';
-import {useTheme} from './theme/useTheme';
-import {THEME_META, type ThemeId} from './theme/theme';
+import {projectCues,timeline,totalDuration} from '../shared/project';
+import {STEP_HINTS,STEP_TITLES,STEPS,stepDone,stepGuide} from '../shared/steps';
+import type {ComposerProject,FfmpegStatus,ProjectState,StepId,View} from '../shared/types';
+import {ActionBar,DocHeader,SidePanel,StepLayout,type SaveState} from './components/Shell';
+import {Button} from './components/UI';
+import {EditorContext,type EditorState} from './editor';
+import {usePreviewAudio} from './hooks/usePreviewAudio';
+import brandLogo from './assets/brand-logo.svg';
+import {DubbingStep} from './pages/Dubbing';
+import {ExportStep,type RenderState} from './pages/Export';
+import {Home} from './pages/Home';
+import {MusicStep} from './pages/Music';
+import {ScenesMain,ScenesPanel,useAddScenes} from './pages/Scenes';
+import {Settings} from './pages/Settings';
+import {SubtitlesStep} from './pages/Subtitles';
 
 type History={present:ComposerProject;past:ComposerProject[];future:ComposerProject[]};
 const clone=<T,>(v:T):T=>JSON.parse(JSON.stringify(v)) as T;
-const fmtShort=(n:number)=>fmt(n);
-const fileName=(file:string)=>file.split(/[\\/]/).pop()||file;
-const isAudio=(file:string)=>/\.(mp3|wav|m4a|flac|ogg)$/i.test(file);
-const mediaExt=(file:string)=>file.split('.').pop()?.toLowerCase()||'';
-const clamp=(value:number,min:number,max:number)=>Math.min(max,Math.max(min,value));
-function Pill({children,tone='muted'}:{children:ReactNode;tone?:'muted'|'active'|'success'|'warning'}){return <span className={`pill pill-${tone}`}>{children}</span>}
-function Button({children,onClick,variant='outline',disabled=false,title}: {children:ReactNode;onClick:()=>void;variant?:'primary'|'outline'|'ghost'|'danger';disabled?:boolean;title?:string}){return <button type="button" title={title} disabled={disabled} onClick={onClick} className={`button button-${variant}`}>{children}</button>}
-function IconButton({children,onClick,title,disabled=false,active=false}:{children:ReactNode;onClick:()=>void;title:string;disabled?:boolean;active?:boolean}){return <button className={`icon-button ${active?'icon-active':''}`} title={title} aria-label={title} onClick={onClick} disabled={disabled}>{children}</button>}
-function Field({label,children,hint}:{label:string;children:ReactNode;hint?:string}){return <label className="field"><span className="field-label">{label}</span>{children}{hint&&<small>{hint}</small>}</label>}
-function Brand(){return <div className="brand"><span className="brand-mark">g<i/></span><span><strong>{BRAND.nameKo}</strong><small>{BRAND.nameEn}</small></span></div>}
-const navigation:{id:EditorMode;label:string;icon:typeof Film;desc:string}[]=[
-  {id:'media',label:'미디어',icon:Layers3,desc:'영상 및 사진'},
-  {id:'subtitles',label:'자막',icon:FileText,desc:'문장과 시간'},
-  {id:'recording',label:'목소리',icon:Mic2,desc:'녹음 및 테이크'},
-  {id:'effects',label:'효과',icon:WandSparkles,desc:'색감과 움직임'},
-  {id:'export',label:'내보내기',icon:Download,desc:'영상 렌더링'},
-  {id:'settings',label:'환경 설정',icon:Settings2,desc:'Python 엔진'}
-];
-function App(){
-  const {theme, auto, setTheme, setAuto} = useTheme();
+const ICONS:Record<StepId,typeof Film>={scenes:Film,dubbing:Mic2,subtitles:Captions,music:Music2,export:Clapperboard};
+const IDLE_RENDER:RenderState={busy:false,draft:false,progress:0,message:'',output:'',error:'',phase:'idle'};
+function BrandIcon({size=28}:{size?:number}){return <div className="brand-icon" style={{width:size,height:size}} aria-hidden="true"><img src={brandLogo} alt="" width={size} height={size}/></div>;}
+
+function ScenesStep({header,actionBar}:{header:ReactNode;actionBar:ReactNode}){return <StepLayout header={header} actionBar={actionBar} panel={<ScenesPanel/>}><ScenesMain/></StepLayout>;}
+function AddScenesButton(){const add=useAddScenes();return <Button size="sm" kind="outline" onClick={()=>void add()}><Plus size={14}/> 장면 추가</Button>;}
+
+export default function App(){
+  const [view,setView]=useState<View>('home');
   const [opened,setOpened]=useState<ProjectState|null>(null);
   const [history,setHistory]=useState<History|null>(null);
-  const [dirty,setDirty]=useState(false);
-  const [mode,setMode]=useState<EditorMode>('media');
+  const [saveState,setSaveState]=useState<SaveState>('saved');
+  const [urls,setUrls]=useState<Record<string,string>>({});
+  const [playhead,setPlayhead]=useState(0);const playheadRef=useRef(0);
+  const [playing,setPlayingState]=useState(false);const [startKey,setStartKey]=useState(0);const [startAt,setStartAt]=useState(0);
   const [selectedClip,setSelectedClip]=useState<number|null>(null);
   const [selectedCue,setSelectedCue]=useState<number|null>(null);
-  const [urls,setUrls]=useState<Record<string,string>>({});
-  const [zoom,setZoom]=useState(44);
-  const [playhead,setPlayhead]=useState(0);
-  const [playing,setPlaying]=useState(false);
-  const [toast,setToast]=useState('');
-  const [engineStatus,setEngineStatus]=useState<EngineStatus>({connected:false,repo:'',python:'',message:'설정 필요'});
-  const [engineRepo,setEngineRepo]=useState('');const [enginePython,setEnginePython]=useState('');
-  const [devices,setDevices]=useState<{index:number;name:string;is_default:boolean}[]>([]);
-  const [device,setDevice]=useState<number|null>(null);
-  const [isRecording,setIsRecording]=useState(false);const [micLevel,setMicLevel]=useState(-90);
-  const [renderStatus,setRenderStatus]=useState<{busy:boolean;progress:number;message:string;output:string}>({busy:false,progress:0,message:'',output:''});
-  const [showAI,setShowAI]=useState(false);const [aiText,setAiText]=useState('');
-  const [showHelp,setShowHelp]=useState(false);
-  const [showName,setShowName]=useState(false);const [projectName,setProjectName]=useState('');
-  const [currentTime,setCurrentTime]=useState(0);
-  const videoRef=useRef<HTMLVideoElement>(null);
-  const audioRef=useRef<HTMLAudioElement>(null);
-  const rootTimer=useRef<number>(0);
-  const toastTimer=useRef<number>(0);
+  const [toastMsg,setToastMsg]=useState<{text:string;type:'info'|'error'|'success'}|null>(null);
+  const [ffmpeg,setFfmpeg]=useState<FfmpegStatus|null>(null);
+  const [render,setRender]=useState<RenderState>(IDLE_RENDER);
+  const [version,setVersion]=useState('');
+  const toastTimer=useRef(0);const saveTimer=useRef(0);const dirtyRef=useRef(false);const savingRef=useRef(false);
   const doc=history?.present||null;
-  const clips=doc?.clips||[];
-  const cues=doc?.subtitle.items||[];
+  const docRef=useRef(doc);docRef.current=doc;
+  const toast=useCallback((text:string,type:'info'|'error'|'success'='info')=>{setToastMsg({text,type});window.clearTimeout(toastTimer.current);toastTimer.current=window.setTimeout(()=>setToastMsg(null),type==='error'?7000:3800);},[]);
   const tracks=useMemo(()=>doc?timeline(doc):[],[doc]);
-  const duration=useMemo(()=>doc?totalDuration(doc):0,[doc]);
-  const active=selectedClip!=null?clips[selectedClip]:null;
-  const selectedSubtitle=selectedCue!=null?cues[selectedCue]:null;
-  const selectedTake=doc?.dubbing.takes.filter(t=>t.subtitle===selectedSubtitle?.index)||[];
-  const timeClip=tracks.find(t=>playhead>=t.start&&(playhead<t.end||t.index===tracks.length-1&&Math.abs(playhead-t.end)<.01));
-  const timeCue=cues.find(s=>playhead>=s.start&&playhead<s.end);
-  const timeMedia=timeClip?.clip;
-  const previewUrl=timeMedia?urls[timeMedia.file]:undefined;
-  const bgmUrl=doc?.bgm.file?urls[doc.bgm.file]:undefined;
-  const showToast=useCallback((message:string)=>{setToast(message);window.clearTimeout(toastTimer.current);toastTimer.current=window.setTimeout(()=>setToast(''),4200);},[]);
-  const commit=useCallback((change:(p:ComposerProject)=>ComposerProject)=>{setHistory(prev=>{if(!prev)return prev;const next=change(clone(prev.present));return {present:next,past:[...prev.past.slice(-39),prev.present],future:[]};});setDirty(true);},[]);
-  const undo=()=>{setHistory(prev=>{if(!prev||!prev.past.length)return prev;const past=[...prev.past],item=past.pop()!;return {present:item,past,future:[prev.present,...prev.future]};});setDirty(true)};
-  const redo=()=>{setHistory(prev=>{if(!prev||!prev.future.length)return prev;const [item,...future]=prev.future;return {present:item,past:[...prev.past,prev.present],future};});setDirty(true)};
-  const load=(state:ProjectState)=>{setOpened(state);setHistory({present:clone(state.data),past:[],future:[]});setDirty(false);setSelectedClip(null);setSelectedCue(null);setPlayhead(0);setPlaying(false);setMode('media');showToast(`프로젝트 열기: ${state.data.title}`)};
-  const call=async <T,>(operation:()=>Promise<T>,onSuccess?:(x:T)=>void):Promise<T|undefined>=>{try{const result=await operation();onSuccess?.(result);return result;}catch(e){showToast(e instanceof Error?e.message:String(e));return undefined;}};
-  const newProject=async(title='제목 없음')=>{const s=await call(()=>window.compose.project.create(title));if(s)load(s);};
-  const openProject=async()=>{if(dirty&&!confirm('저장하지 않은 변경 사항이 있습니다. 다른 프로젝트를 열까요?'))return;const s=await call(()=>window.compose.project.open());if(s)load(s);};
-  const save=async()=>{if(!doc)return;const s=await call(()=>window.compose.project.save(doc));if(s){setOpened(s);setDirty(false);showToast('프로젝트가 저장되었습니다.')}return s;};
-  const saveAs=async()=>{if(!doc)return;const s=await call(()=>window.compose.project.saveAs(doc));if(s){load(s);showToast('다른 이름으로 저장했습니다.')}};
-  const importMedia=async()=>{if(!doc)return;const items=await call(()=>window.compose.media.import());if(!items?.length)return;commit(p=>{for(const item of items){if(item.type==='image'||item.type==='video')p.clips.push({file:item.file,type:item.type,duration:4,label:item.name,motion:'none'});else if(item.type==='audio'){if(!p.bgm.file)p.bgm.file=item.file;}else if(item.type==='subtitle')showToast('SRT는 자막 화면의 자막 가져오기를 이용해 주세요.');}return p;});showToast(`${items.length}개 미디어를 프로젝트에 복사했습니다.`);};
-  useEffect(()=>{void window.compose.engine.status().then(s=>{setEngineStatus(s);setEngineRepo(s.repo);setEnginePython(s.python);});},[]);
-  useEffect(()=>{const close=window.compose.engine.onEvent(ev=>{if(ev.event==='render_progress')setRenderStatus(p=>({...p,busy:true,progress:ev.progress||0,message:ev.message||'렌더링 중'}));if(ev.event==='render_done'){setRenderStatus({busy:false,progress:1,message:ev.message||'완료',output:ev.path||''});showToast('영상 렌더링이 완료되었습니다.')}if(ev.event==='render_error'||ev.event==='disconnected'){setRenderStatus(p=>({...p,busy:false,message:ev.message||'엔진 오류'}));showToast(ev.message||'엔진 오류');}});return close;},[showToast]);
-  useEffect(()=>{const files=[...(doc?.clips.map(c=>c.file)||[]),...(doc?.bgm.file?[doc.bgm.file]:[]),...(doc?.dubbing.takes.map(t=>t.file)||[])];if(!opened)return;let dead=false;void window.compose.media.urls([...new Set(files)]).then(map=>{if(!dead)setUrls(map);}).catch(()=>{});return()=>{dead=true;};},[opened?.path,doc?.clips,doc?.bgm.file,doc?.dubbing.takes]);
-  useEffect(()=>{if(!playing||!duration)return;let last=performance.now();const run=(now:number)=>{const delta=Math.min(.1,(now-last)/1000);last=now;setPlayhead(t=>{const next=t+delta;if(next>=duration){setPlaying(false);return 0;}return next;});rootTimer.current=requestAnimationFrame(run);};rootTimer.current=requestAnimationFrame(run);return()=>cancelAnimationFrame(rootTimer.current);},[playing,duration]);
-  useEffect(()=>{const v=videoRef.current;if(!v||timeMedia?.type!=='video'||!timeClip)return;const target=(timeMedia.trim_start||0)+(playhead-timeClip.start)*Math.max(.1,timeMedia.speed||1);if(Math.abs(v.currentTime-target)>.32&&Number.isFinite(target)){try{v.currentTime=Math.max(0,target);}catch{}}if(playing&&v.paused)void v.play().catch(()=>{});if(!playing&&!v.paused)v.pause();},[playhead,playing,timeClip?.index,previewUrl]);
-  useEffect(()=>{const a=audioRef.current;if(!a)return;a.volume=clamp(doc?.bgm.volume||.25,0,1);if(playing){if(a.paused)void a.play().catch(()=>{});}else a.pause();},[playing,bgmUrl,doc?.bgm.volume]);
-  useEffect(()=>{if(!isRecording)return;const timer=window.setInterval(()=>{void window.compose.engine.action<{db:number}>('record_level').then(r=>setMicLevel(r.db)).catch(()=>{});},160);return()=>window.clearInterval(timer);},[isRecording]);
-  useEffect(()=>{const fn=(e:KeyboardEvent)=>{const inField=(e.target as HTMLElement)?.closest('input,textarea,select,[contenteditable]');if(e.ctrlKey&&e.key.toLowerCase()==='s'){e.preventDefault();void save();}else if(e.ctrlKey&&e.key.toLowerCase()==='o'){e.preventDefault();void openProject();}else if(e.ctrlKey&&e.key.toLowerCase()==='n'){e.preventDefault();void newProject();}else if(e.ctrlKey&&e.key.toLowerCase()==='z'&&!inField){e.preventDefault();undo();}else if(e.ctrlKey&&e.key.toLowerCase()==='y'&&!inField){e.preventDefault();redo();}else if(e.code==='Space'&&!inField){e.preventDefault();setPlaying(v=>!v);}else if(e.code==='Delete'&&!inField&&selectedClip!=null){e.preventDefault();removeClip(selectedClip);}};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);});
-  const removeClip=(index:number)=>{commit(p=>{p.clips.splice(index,1);return p;});setSelectedClip(null);};
-  const patchClip=(index:number,patch:Partial<Clip>)=>commit(p=>{p.clips[index]={...p.clips[index],...patch};return p;});
-  const moveClip=(from:number,to:number)=>{if(from===to)return;commit(p=>{const [clip]=p.clips.splice(from,1);p.clips.splice(to,0,clip);return p;});setSelectedClip(to);};
-  const patchCue=(index:number,patch:Partial<SubtitleItem>)=>commit(p=>{if(!p.subtitle.items)p.subtitle.items=[];p.subtitle.items[index]={...p.subtitle.items[index],...patch};return p;});
-  const importSrt=async()=>{const text=await call(()=>window.compose.subtitle.importSrt());if(!text)return;const items=fromSrt(text);if(!items.length){showToast('읽을 수 있는 자막이 없습니다.');return;}commit(p=>({...p,subtitle:{...p.subtitle,items,file:null}}));showToast(`${items.length}개 자막을 가져왔습니다.`);};
-  const saveSrt=async()=>{const file=await call(()=>window.compose.subtitle.saveSrt(cues));if(file)showToast(`자막 저장: ${fileName(file)}`);};
-  const applyAI=()=>{try{let value=aiText.trim();if(value.startsWith('```'))value=value.replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'');const raw=JSON.parse(value);const p=normalizeProject(raw);if(p.version!==2)throw new Error('v2 형식만 지원합니다.');if(!Array.isArray(p.clips))throw new Error('clips가 배열이 아닙니다.');if(!confirm('AI 결과를 적용하면 현재 프로젝트 구성이 교체됩니다. 실행 취소로 되돌릴 수 있습니다. 계속할까요?'))return;commit(()=>p);setShowAI(false);showToast('AI 편집 구성 JSON을 적용했습니다.');}catch(e){showToast('JSON 오류: '+(e instanceof Error?e.message:String(e)));}};
-  const chooseConfig=async(type:'repo'|'python')=>{const p=await call(()=>type==='repo'?window.compose.engine.pickRepo():window.compose.engine.pickPython());if(p){if(type==='repo')setEngineRepo(p);else setEnginePython(p);}};
-  const configure=async()=>{const result=await call(()=>window.compose.engine.configure({repo:engineRepo,python:enginePython}));if(result){setEngineStatus(result);showToast('엔진 경로를 저장했습니다.');}};
-  const ping=async()=>{const result=await call(()=>window.compose.engine.action<{connected:boolean}>('ping'));if(result){setEngineStatus(s=>({...s,connected:true,message:'기존 Python 모듈 연결됨'}));showToast('기존 Python 엔진 연결 확인');}};
-  const fetchDevices=async()=>{const result=await call(()=>window.compose.engine.action<typeof devices>('devices'));if(result){setDevices(result);if(result.length&&!device)setDevice(result.find(x=>x.is_default)?.index??result[0].index);}};
-  const startRec=async()=>{if(!doc)return;const idx=selectedSubtitle?.index||0;const result=await call(()=>window.compose.engine.action<{recording:boolean}>('record_start',{device,subtitle:idx}));if(result?.recording){setIsRecording(true);showToast('녹음을 시작했습니다.');}};
-  const stopRec=async()=>{const result=await call(()=>window.compose.engine.action<{file:string;duration:number;subtitle:number}>('record_stop'));if(!result)return;setIsRecording(false);const cue=selectedSubtitle;commit(p=>{p.dubbing.takes.push({file:result.file,subtitle:result.subtitle||null,offset:result.subtitle?0:playhead,volume:1});return p;});showToast(`녹음 저장: ${fileName(result.file)} · ${result.duration.toFixed(1)}초${cue?'':''}`);};
-  const render=async(draft:boolean)=>{if(!doc||!opened)return;if(isRecording){showToast('녹음을 먼저 종료해 주세요.');return;}const saved=await save();if(!saved)return;setRenderStatus({busy:true,progress:0,message:'Python 렌더링을 시작합니다.',output:''});const out=await call(()=>window.compose.engine.action<{started:boolean}>('render',{project_path:saved.path,draft,encoder:'libx264',output:doc.output.file}));if(!out)setRenderStatus(p=>({...p,busy:false,message:'렌더링 시작 실패'}));};
-  const cancelRender=async()=>{await call(()=>window.compose.engine.action('cancel'));showToast('렌더링 취소 요청을 보냈습니다.');};
-  const openPreview=async()=>{if(renderStatus.output){await call(()=>window.compose.project.showFile(renderStatus.output));}};
-  const onDrop=(e:DragEvent<HTMLElement>,to:number)=>{e.preventDefault();const from=Number(e.dataTransfer.getData('text/plain'));if(Number.isInteger(from)&&from>=0&&from<clips.length)moveClip(from,to);};
-  const getTitle=(id:EditorMode)=>navigation.find(n=>n.id===id)?.label||id;
+  const total=useMemo(()=>doc?totalDuration(doc):0,[doc]);
+  const cues=useMemo(()=>doc?projectCues(doc):[],[doc]);
 
-  return <div className="app">
-    <aside className="sidebar">
-      <Brand/>
-      <div className="work-picker" onClick={()=>setShowHelp(true)} role="button" tabIndex={0}><span className="work-avatar">G</span><div><strong>{BRAND.suiteKo}</strong><small>개인 작업 공간</small></div><ChevronDown size={16}/></div>
-      <div className="nav-heading">WORKSPACE</div>
-      <button className="nav-entry" onClick={()=>setShowHelp(true)}><LayoutDashboard size={18}/> 시작 안내</button>
-      <div className="nav-heading nav-spaced">COMPOSING</div>
-      {navigation.map(item=>{const I=item.icon;return <button key={item.id} className={`nav-entry ${mode===item.id?'current':''}`} onClick={()=>setMode(item.id)}><I size={18}/><span>{item.label}</span>{item.id==='recording'&&isRecording&&<span className="rec-pulse"/>}</button>})}
-      <div className="sidebar-bottom"><div className="status-line"><span className={`status-dot ${engineStatus.connected?'connected':''}`}/><span>{engineStatus.connected?'Python 엔진 연결됨':'Python 엔진 대기'}</span></div><button className="sidebar-help" onClick={()=>setShowHelp(true)}><Info size={15}/> 프로그램 사용 안내</button><div className="mini-version">{BRAND.suiteEn} · v0.1</div></div>
-    </aside>
-    <div className="shell">
-      <header className="topbar">
-        <div className="crumb"><span>미디어공방</span><ArrowRight size={13}/><strong>{doc?.title||'새 프로젝트'}</strong>{dirty&&<span className="unsaved-dot" title="저장되지 않은 변경 사항"/>}</div>
-        <div className="actions">
-          <IconButton title="새 프로젝트 (Ctrl+N)" onClick={()=>void newProject()}><Plus size={17}/></IconButton>
-          <IconButton title="열기 (Ctrl+O)" onClick={()=>void openProject()}><FolderOpen size={17}/></IconButton>
-          <IconButton title="저장 (Ctrl+S)" onClick={()=>void save()} disabled={!doc}><Save size={17}/></IconButton>
-          <IconButton title="다른 이름으로 저장" onClick={()=>void saveAs()} disabled={!doc}><MoreHorizontal size={17}/></IconButton>
-          <span className="bar-split"/>
-          <IconButton title="실행 취소 (Ctrl+Z)" disabled={!history?.past.length} onClick={undo}><Undo2 size={17}/></IconButton>
-          <IconButton title="다시 실행 (Ctrl+Y)" disabled={!history?.future.length} onClick={redo}><Redo2 size={17}/></IconButton>
-          <span className="bar-split"/>
-          <Button onClick={()=>setShowAI(true)} disabled={!doc}><Sparkles size={15}/> AI 편집안</Button>
-          <Button variant="primary" disabled={!doc} onClick={()=>setMode('export')}><Download size={16}/> 내보내기</Button>
+  // ── 저장 (창작실처럼 자동 저장) ──
+  const saveNow=useCallback(async()=>{const d=docRef.current;if(!d||savingRef.current)return;savingRef.current=true;setSaveState('saving');
+    try{const s=await window.compose.project.save(d);dirtyRef.current=docRef.current!==d;setOpened(o=>o?{...o,path:s.path,updatedAt:s.updatedAt}:s);setSaveState(dirtyRef.current?'pending':'saved');}
+    catch(e){setSaveState('pending');toast(`저장하지 못했어요: ${e instanceof Error?e.message:String(e)}`,'error');}finally{savingRef.current=false;}},[toast]);
+  const scheduleSave=useCallback(()=>{dirtyRef.current=true;setSaveState('pending');window.clearTimeout(saveTimer.current);saveTimer.current=window.setTimeout(()=>void saveNow(),900);},[saveNow]);
+  const commit=useCallback((change:(p:ComposerProject)=>ComposerProject)=>{setHistory(prev=>{if(!prev)return prev;const next=change(clone(prev.present));return {present:next,past:[...prev.past.slice(-59),prev.present],future:[]};});scheduleSave();},[scheduleSave]);
+  const undo=useCallback(()=>{setHistory(prev=>{if(!prev||!prev.past.length)return prev;const past=[...prev.past];const item=past.pop()!;return {present:item,past,future:[prev.present,...prev.future]};});scheduleSave();},[scheduleSave]);
+  const redo=useCallback(()=>{setHistory(prev=>{if(!prev||!prev.future.length)return prev;const [item,...future]=prev.future;return {present:item,past:[...prev.past,prev.present],future};});scheduleSave();},[scheduleSave]);
+
+  const load=useCallback((s:ProjectState)=>{setOpened(s);setHistory({present:clone(s.data),past:[],future:[]});dirtyRef.current=false;setSaveState('saved');setSelectedClip(s.data.clips.length?0:null);setSelectedCue(null);setPlayhead(0);playheadRef.current=0;setPlayingState(false);setRender(IDLE_RENDER);setView('scenes');toast(s.notice||`프로젝트를 열었어요: ${s.data.title}`,'success');},[toast]);
+  const guard=async<T,>(op:()=>Promise<T>)=>{try{if(dirtyRef.current)await saveNow();return await op();}catch(e){toast(e instanceof Error?e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/,''):String(e),'error');return undefined;}};
+  const openFolder=async()=>{const s=await guard(()=>window.compose.project.openFolder());if(s)load(s);};
+  const openFile=async()=>{const s=await guard(()=>window.compose.project.open());if(s)load(s);};
+  const openPath=async(p:string)=>{const s=await guard(()=>window.compose.project.openPath(p));if(s)load(s);};
+  const newProject=async()=>{const s=await guard(()=>window.compose.project.create('새 편집 프로젝트'));if(s)load(s);};
+
+  // ── 재생 ──
+  const seek=useCallback((t:number)=>{const v=Math.max(0,Math.min(t,total));setPlayhead(v);playheadRef.current=v;if(playing){setStartAt(v);setStartKey(k=>k+1);}},[total,playing]);
+  const setPlaying=useCallback((v:boolean)=>{if(v){let at=playheadRef.current;if(at>=total-.05)at=0;setPlayhead(at);playheadRef.current=at;setStartAt(at);setStartKey(k=>k+1);}setPlayingState(v);},[total]);
+  useEffect(()=>{if(!playing||!total)return;let last=performance.now();let raf=0;const run=(now:number)=>{const dt=Math.min(.1,(now-last)/1000);last=now;const next=playheadRef.current+dt;if(next>=total){playheadRef.current=total;setPlayhead(total);setPlayingState(false);return;}playheadRef.current=next;setPlayhead(next);raf=requestAnimationFrame(run);};raf=requestAnimationFrame(run);return()=>cancelAnimationFrame(raf);},[playing,total]);
+  usePreviewAudio({doc,urls,cues,playing,startAt,startKey,getPlayhead:()=>playheadRef.current});
+
+  // ── 미디어 주소 ──
+  const fileKey=doc?[...doc.clips.map(c=>c.file),doc.bgm.file||'',...doc.dubbing.takes.map(t=>t.file)].join('|'):'';
+  useEffect(()=>{if(!opened||!fileKey)return;let dead=false;const files=[...new Set(fileKey.split('|').filter(Boolean))];void window.compose.media.urls(files).then(m=>{if(!dead)setUrls(m);}).catch(()=>{});return()=>{dead=true;};},[fileKey,opened?.path]);
+
+  useEffect(()=>{void window.compose.ffmpeg.status().then(setFfmpeg).catch(()=>{});void window.compose.info().then(i=>setVersion(i.version)).catch(()=>{});},[]);
+  useEffect(()=>window.compose.render.onEvent(ev=>{
+    if(ev.phase==='progress')setRender(r=>({...r,busy:true,phase:'progress',progress:Math.max(r.progress,ev.progress),message:ev.message}));
+    else if(ev.phase==='done'){setRender(r=>({...r,busy:false,phase:'done',progress:1,message:ev.message,output:ev.output||'',error:''}));toast('영상을 만들었어요!','success');}
+    else setRender(r=>({...r,busy:false,phase:ev.phase,progress:0,message:ev.message,error:ev.phase==='error'?ev.message:''}));
+  }),[toast]);
+  const startRender=async(draft:boolean)=>{const d=docRef.current;if(!d)return;setPlayingState(false);setRender({...IDLE_RENDER,busy:true,draft,phase:'progress',message:'준비 중'});
+    const r=await guard(()=>window.compose.render.start(d,draft));if(!r)setRender(IDLE_RENDER);};
+
+  // ── 키보드 ──
+  useEffect(()=>{const fn=(e:KeyboardEvent)=>{const inField=(e.target as HTMLElement)?.closest('input,textarea,select,[contenteditable]');const k=e.key.toLowerCase();
+    if(e.ctrlKey&&k==='s'){e.preventDefault();void saveNow();}
+    else if(e.ctrlKey&&k==='z'&&!inField){e.preventDefault();if(e.shiftKey)redo();else undo();}
+    else if(e.ctrlKey&&k==='y'&&!inField){e.preventDefault();redo();}
+    else if(e.key===' '&&!inField&&doc&&view!=='dubbing'&&view!=='export'&&view!=='home'&&view!=='settings'&&!(e.target as HTMLElement)?.closest('button')){e.preventDefault();setPlaying(!playing);}};
+    window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[saveNow,undo,redo,doc,view,playing,setPlaying]);
+  useEffect(()=>{const fn=(e:BeforeUnloadEvent)=>{if(dirtyRef.current){void saveNow();}void e;};window.addEventListener('beforeunload',fn);return()=>window.removeEventListener('beforeunload',fn);},[saveNow]);
+
+  const go=(v:View)=>{if(v!=='home'&&v!=='settings'&&!doc){toast('먼저 창작실 작품이나 프로젝트를 열어 주세요.');return;}setPlayingState(false);setView(v);};
+  const editor:EditorState|null=doc?{doc,commit,tracks,total,cues,urls,playhead,seek,playing,setPlaying,selectedClip,setSelectedClip,selectedCue,setSelectedCue,toast}:null;
+  const projectTitle=doc?.title||'';
+  const header=(step:StepId,actions?:ReactNode)=>{const Icon=ICONS[step];return <DocHeader icon={<Icon size={17}/>} title={STEP_TITLES[step]} projectTitle={projectTitle}
+    chips={<span className="chip">{doc!.output.width}×{doc!.output.height}</span>} saveState={saveState} actions={actions}
+    onUndo={undo} onRedo={redo} canUndo={!!history?.past.length} canRedo={!!history?.future.length} onOpenFolder={()=>void window.compose.project.reveal()}/>;};
+  const bar=(step:StepId)=>{const g=stepGuide(doc!,step);
+    if(step==='export')return <ActionBar guide={{...g,ready:g.ready&&!render.busy&&ffmpeg?.ok!==false}} busy={render.busy} primaryLabel="완성 영상 만들기" onNext={()=>void startRender(false)} secondary={<Button kind="outline" disabled={render.busy||!g.ready||ffmpeg?.ok===false} onClick={()=>void startRender(true)}>미리보기 영상 (빠르게)</Button>}/>;
+    return <ActionBar guide={g} onNext={()=>g.next&&go(g.next)}/>;};
+
+  let body:ReactNode;
+  if(view==='home')body=<div className="step-layout"><DocHeader icon={<HomeIcon size={17}/>} title="시작하기"/><div className="workspace"><div className="workspace-main page-scroll"><Home onOpenFolder={()=>void openFolder()} onOpenFile={()=>void openFile()} onOpenPath={p=>void openPath(p)} onNew={()=>void newProject()}/></div></div></div>;
+  else if(view==='settings')body=<div className="step-layout"><DocHeader icon={<Settings2 size={17}/>} title="환경 설정"/><div className="workspace"><div className="workspace-main page-scroll"><Settings ffmpeg={ffmpeg} onFfmpeg={setFfmpeg} toast={toast}/></div></div></div>;
+  else if(!doc)body=<StepLayout header={<DocHeader icon={<Info size={17}/>} title="프로젝트 없음"/>} panel={<SidePanel title="안내"><p/></SidePanel>}><div/></StepLayout>;
+  else if(view==='scenes')body=<ScenesStep header={header('scenes',<AddScenesButton/>)} actionBar={bar('scenes')}/>;
+  else if(view==='dubbing')body=<DubbingStep header={header('dubbing')} actionBar={bar('dubbing')} goto={s=>go(s)}/>;
+  else if(view==='subtitles')body=<SubtitlesStep header={header('subtitles')} actionBar={bar('subtitles')}/>;
+  else if(view==='music')body=<MusicStep header={header('music')} actionBar={bar('music')}/>;
+  else body=<ExportStep header={header('export')} actionBar={bar('export')} render={render} onCancel={()=>void window.compose.render.cancel()} ffmpeg={ffmpeg} openSettings={()=>go('settings')}/>;
+
+  const done=doc?STEPS.filter(s=>stepDone(doc,s)).length:0;
+  return <EditorContext.Provider value={editor}>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand-area"><BrandIcon size={28}/><div><strong>{BRAND.nameKo}</strong><small>{BRAND.nameEn}</small></div></div>
+        <div className="sidebar-project">
+          <button className="current-project" onClick={()=>go('home')} title="다른 작품 열기"><FolderInput size={15}/><div><small>현재 작품</small><strong>{doc?projectTitle||'제목 없음':'열린 작품 없음'}</strong></div><ChevronDown size={14}/></button>
+          <Button size="sm" onClick={()=>void openFolder()} title="고모 창작실에서 내보낸 제작 패키지 폴더를 엽니다"><FolderInput size={14}/> 창작실 작품 불러오기</Button>
         </div>
-      </header>
-      {!doc?<div className="welcome-wrap"><div className="hero-gradient"><div className="eyebrow">GOMO MEDIA WORKSHOP</div><h1>목소리를 더해,<br/><em>작품을 완성하다.</em></h1><p>고모 창작실에서 만든 이미지와 영상을 받아 사람의 목소리, 자막, 음악을 담는 편집 공간입니다. 기존 Python 렌더링 엔진은 그대로 사용합니다.</p><div className="hero-buttons"><Button variant="primary" onClick={()=>void newProject('새 영상 프로젝트')}><Plus size={17}/> 새 영상 시작</Button><Button onClick={()=>void openProject()}><FolderOpen size={16}/> 기존 프로젝트 열기</Button></div><div className="hero-foot"><CheckCircle2 size={14}/> Video Composer v2 프로젝트 호환 <span>·</span> <CheckCircle2 size={14}/> 분리된 Python 처리 엔진</div></div><div className="welcome-tiles"><div><Film size={23}/><strong>타임라인</strong><span>이미지와 영상을 배치</span></div><div><Mic2 size={23}/><strong>사람 목소리</strong><span>기존 녹음 엔진 사용</span></div><div><FileText size={23}/><strong>자막·음악</strong><span>시간과 표현을 세밀하게</span></div></div></div>:
-        <><main className="workspace">
-          <div className="page-header"><div><span className="eyebrow">VIDEO COMPOSER WORKSPACE</span><h1>{mode==='settings'?'환경 설정':mode==='export'?'영상 출력':`${doc.title}`}</h1><p>{mode==='settings'?'기존 더빙 Python 엔진과 연결합니다.':mode==='export'?'기존 FFmpeg 렌더링 엔진을 실행합니다.':`${clips.length}개 클립 · ${cues.length}개 자막 · ${fmtShort(duration)} · ${getTitle(mode)} 작업`}</p></div><div className="head-right"><Pill tone="active">편집 프로젝트 v{doc.version}</Pill><Button onClick={()=>setShowName(true)}><BookOpen size={15}/> 제목 편집</Button></div></div>
-          {mode==='settings'?<section className="settings-view"><div className="panel settings-card"><div className="section-title"><Settings2 size={20}/><div><h2>화면 및 테마</h2><p>고모 창작실과 동일한 디자인 시스템을 사용합니다.</p></div></div><div className="theme-grid">{(Object.keys(THEME_META) as ThemeId[]).map(id=>{const t=THEME_META[id];return <button key={id} className={`theme-card ${theme===id?'selected':''}`} onClick={()=>setTheme(id)}><span className="theme-swatch" style={{background:t.preview}}/><div><strong>{t.name}</strong><small>{t.description}</small></div>{theme===id&&<Check size={16}/>}</button>})}</div><div className="check-row"><input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/><span>Windows 시스템 테마 자동 적용</span></div><small className="side-note">자동 적용 시 밝은 모드 → 화이트 블루, 어두운 모드 → 다크. 해제하면 마지막 선택 테마가 유지됩니다.</small></div><div className="panel settings-card"><div className="section-title"><Settings2 size={20}/><div><h2>Python 엔진 연결</h2><p>기존 dubbing 프로그램의 소스와 가상환경을 그대로 사용합니다.</p></div></div><Field label="기존 dubbing 소스 폴더"><div className="path-picker"><input value={engineRepo} onChange={e=>setEngineRepo(e.target.value)} placeholder="D:\\projects\\dubbing"/><Button onClick={()=>void chooseConfig('repo')}><FolderOpen size={15}/> 찾기</Button></div></Field><Field label="기존 Python 가상환경 실행 파일"><div className="path-picker"><input value={enginePython} onChange={e=>setEnginePython(e.target.value)} placeholder="D:\\projects\\dubbing\\.venv\\Scripts\\python.exe"/><Button onClick={()=>void chooseConfig('python')}><FolderOpen size={15}/> 찾기</Button></div></Field><div className="inline-actions"><Button variant="primary" onClick={()=>void configure()}><Save size={16}/> 경로 저장</Button><Button onClick={()=>void ping()}><Activity size={16}/> 연결 테스트</Button></div><div className="notice"><Info size={17}/><div>{engineStatus.message}<small>이 앱에 Python 모듈을 복제하지 않습니다. 기존 저장소의 렌더·녹음 함수를 로드합니다.</small></div></div></div><div className="panel settings-card"><div className="section-title"><ShieldAlert size={20}/><div><h2>변경하지 않는 구성 요소</h2><p>원본 유지 원칙</p></div></div><div className="settings-lines"><p><Check size={16}/> FFmpeg 조립 및 캐시</p><p><Check size={16}/> 기존 녹음기·입력 장치 탐색</p><p><Check size={16}/> 프로젝트 JSON v2 구조</p><p><Check size={16}/> 기존 자막·음성 분석 코드</p></div><div className="notice muted-notice"><Info size={17}/><span>Whisper 기반 자동 자막 정렬, 정밀 클립 자르기, 고급 영상 효과 등 원본의 모든 UI 기능은 이 초기판에 아직 이식되지 않았습니다.</span></div></div></section>:
-          <div className="editor-grid">
-            <section className="center-pane">
-              <div className="panel preview-panel"><div className="panel-header"><div className="panel-label"><MonitorIcon/> 미리보기 <Pill>{fmtShort(playhead)} / {fmtShort(duration)}</Pill></div><div className="panel-toolbar"><IconButton title="프로젝트 폴더 열기" onClick={()=>void window.compose.project.folder()}><FolderOpen size={15}/></IconButton><IconButton title="자동 렌더 미리보기 생성" onClick={()=>void render(true)} disabled={renderStatus.busy}><RotateCcw size={15}/></IconButton></div></div>
-                  <div className="viewer"><audio ref={audioRef} src={bgmUrl} loop preload="metadata"/><div className="viewer-content" key={timeClip?.index??'empty'}>{timeMedia&&previewUrl?(timeMedia.type==='image'?<img src={previewUrl} alt={timeMedia.label||timeMedia.file}/>:<video ref={videoRef} src={previewUrl} muted preload="metadata" playsInline/>):<div className="preview-empty"><ImageIcon size={42}/><strong>미디어를 추가해 주세요</strong><span>이미지나 영상을 불러오면 여기에서 확인할 수 있습니다.</span><Button onClick={()=>void importMedia()}><Plus size={15}/> 미디어 추가</Button></div>}{timeCue&&<div className="subtitle-overlay">{timeCue.text}</div>}</div><span className="preview-watermark">PREVIEW · 구성 확인용</span></div>
-                  <div className="player-controls"><div className="play-main"><IconButton title="처음으로" onClick={()=>setPlayhead(0)}><ArrowLeft size={15}/></IconButton><button className="play-circle" onClick={()=>setPlaying(v=>!v)} aria-label={playing?'일시정지':'재생'}>{playing?<Pause size={18} fill="currentColor"/>:<Play size={18} fill="currentColor"/>}</button><IconButton title="끝으로" onClick={()=>setPlayhead(duration)}><ArrowRight size={15}/></IconButton></div><span className="player-time">{fmtShort(playhead)} <span>/ {fmtShort(duration)}</span></span><div className="play-volume"><Volume2 size={16}/><span>{doc.output.width} × {doc.output.height} · {doc.output.fps}fps</span></div></div>
-                </div>
-                <div className="timeline-section"><div className="panel-header timeline-heading"><div className="panel-label"><Clapperboard size={16}/> 타임라인 <span className="mini-counter">{clips.length}개 클립</span></div><div className="panel-toolbar"><IconButton title="축소" onClick={()=>setZoom(z=>clamp(z-8,22,100))}><ZoomOut size={16}/></IconButton><span className="zoom-readout">{zoom}px/s</span><IconButton title="확대" onClick={()=>setZoom(z=>clamp(z+8,22,100))}><ZoomIn size={16}/></IconButton><IconButton title="전체 보기" onClick={()=>setZoom(Math.max(22,Math.min(90,Math.floor(850/Math.max(1,duration)))))}><Maximize size={15}/></IconButton></div></div>
-                  <div className="timeline-body"><div className="track-labels"><div className="time-label">시간</div><div className="track-label"><Film size={15}/> 영상 <Pill>{clips.length}</Pill></div><div className="track-label"><FileText size={15}/> 자막 <Pill>{cues.length}</Pill></div><div className="track-label"><Mic2 size={15}/> 목소리 <Pill>{doc.dubbing.takes.length}</Pill></div><div className="track-label"><Music2 size={15}/> 음악</div></div>
-                    <div className="timeline-scroller"><div className="timeline-surface" style={{width:Math.max(820,duration*zoom+80)}}><div className="time-ruler" onClick={e=>{const box=e.currentTarget.getBoundingClientRect();setPlayhead(clamp((e.clientX-box.left)/zoom,0,duration))}}>{Array.from({length:Math.floor(duration/5)+2},(_,i)=><span key={i} className="ruler-tick" style={{left:i*5*zoom}}>{fmtShort(i*5)}</span>)}</div>
-                      <div className="timeline-lane clips-lane" onDragOver={e=>e.preventDefault()}>{tracks.map(t=><button key={t.index} draggable onDragStart={e=>e.dataTransfer.setData('text/plain',String(t.index))} onDragOver={e=>e.preventDefault()} onDrop={e=>onDrop(e,t.index)} onClick={()=>{setSelectedClip(t.index);setMode('media');setPlayhead(t.start)}} className={`timeline-clip ${t.index===selectedClip?'selected':''} ${t.clip.type==='video'?'video-clip':'image-clip'}`} style={{left:t.start*zoom,width:Math.max(26,t.duration*zoom-2)}}><span className="clip-index">{String(t.index+1).padStart(2,'0')} · {t.clip.type==='video'?'VID':'IMG'}</span><span className="clip-name">{t.clip.label||fileName(t.clip.file)}</span><span className="clip-duration">{fmtShort(t.duration)}</span></button>)}</div>
-                      <div className="timeline-lane cues-lane">{cues.map((cue,i)=><button key={`cue-${i}`} className={`cue-clip ${selectedCue===i?'selected':''}`} style={{left:cue.start*zoom,width:Math.max(8,(cue.end-cue.start)*zoom-2)}} title={cue.text} onClick={()=>{setMode('subtitles');setSelectedCue(i);setPlayhead(cue.start)}}>{cue.text}</button>)}</div>
-                      <div className="timeline-lane voice-lane">{doc.dubbing.takes.map((take,i)=>{const cue=cues.find(c=>c.index===take.subtitle);const start=cue?cue.start+(take.offset||0):(take.offset||0);return <button key={i} className="voice-clip" style={{left:Math.max(0,start*zoom),width:Math.max(40,2*zoom)}} title={take.file} onClick={()=>{setMode('recording');setSelectedCue(cues.findIndex(x=>x.index===take.subtitle));setPlayhead(Math.max(0,start));}}><AudioLines size={12}/>{fileName(take.file)}</button>})}</div>
-                      <div className="timeline-lane music-lane">{doc.bgm.file&&<button className="music-clip" style={{left:Math.max(0,Number(doc.bgm.start_offset||0)*zoom),width:Math.max(80,duration*zoom)}} onClick={()=>setMode('media')}><Music2 size={14}/> {fileName(doc.bgm.file)}</button>}</div><div className="playhead" style={{left:playhead*zoom}}><span/></div></div></div></div>
-                  <div className="timeline-footer"><span><Info size={14}/> 클립을 드래그하면 순서를 변경할 수 있습니다. 세밀한 길이 조절은 오른쪽 패널에서 가능합니다.</span><Button onClick={()=>void importMedia()}><Plus size={15}/> 클립 추가</Button></div>
-                </div>
-              </section>
-              <aside className="inspector"><div className="inspector-head"><span className="eyebrow">INSPECTOR / {mode.toUpperCase()}</span><h2>{getTitle(mode)}</h2><p>{navigation.find(n=>n.id===mode)?.desc}</p></div>
-                {mode==='media'&&<div className="inspector-scroll"><div className="tab-title"><span>프로젝트 미디어</span><Button onClick={()=>void importMedia()}><Plus size={14}/> 가져오기</Button></div>{clips.length?<div className="media-list">{clips.map((clip,i)=><button className={`media-entry ${selectedClip===i?'selected':''}`} key={`${clip.file}-${i}`} onClick={()=>{setSelectedClip(i);setPlayhead(tracks[i]?.start||0);}}><div className="media-icon">{clip.type==='image'?<ImageIcon size={18}/>:<Film size={18}/>}</div><span><strong>{clip.label||fileName(clip.file)}</strong><small>{clip.type==='video'?'영상':'이미지'} · {fmtShort(clipDuration(clip))}</small></span><MoreHorizontal size={15}/></button>)}</div>:<div className="empty-side">미디어가 없습니다. 이미지나 영상을 가져오세요.</div>}
-                  {active&&selectedClip!==null&&<div className="inspector-section"><div className="sub-title">선택 클립 설정</div><Field label="표시 이름"><input value={active.label||''} onChange={e=>patchClip(selectedClip,{label:e.target.value})}/></Field><div className="field-row"><Field label="표시 시간 (초)"><input type="number" step=".1" min=".1" value={clipDuration(active)} onChange={e=>patchClip(selectedClip,active.type==='image'?{duration:Math.max(.1,+e.target.value||4)}:{fit_duration:Math.max(.1,+e.target.value||4)})}/></Field><Field label="재생 속도"><input type="number" step=".1" min=".1" max="16" value={active.speed||1} onChange={e=>patchClip(selectedClip,{speed:clamp(+e.target.value||1,.1,16)})}/></Field></div><Field label="이전 장면과 전환"><select value={active.transition?.type||'default'} onChange={e=>patchClip(selectedClip,{transition:e.target.value==='default'?null:{type:e.target.value,duration:active.transition?.duration??.5}})}><option value="default">프로젝트 기본값</option><option value="none">컷</option><option value="crossfade">크로스페이드</option><option value="fade">페이드</option><option value="wipeleft">왼쪽 와이프</option><option value="dissolve">디졸브</option></select></Field><div className="inline-actions"><Button onClick={()=>moveClip(selectedClip,Math.max(0,selectedClip-1))} disabled={selectedClip===0}><ArrowUp size={15}/> 앞</Button><Button onClick={()=>moveClip(selectedClip,Math.min(clips.length-1,selectedClip+1))} disabled={selectedClip===clips.length-1}><ArrowDown size={15}/> 뒤</Button><Button variant="danger" onClick={()=>removeClip(selectedClip)}><Trash2 size={15}/> 삭제</Button></div></div>}
-                  <div className="inspector-section"><div className="sub-title">배경음악</div><p className="side-note">오디오 파일을 가져오면 처음 파일이 배경음악으로 지정됩니다.</p><Field label="음악 파일"><select value={doc.bgm.file||''} onChange={e=>commit(p=>({...p,bgm:{...p.bgm,file:e.target.value||null}}))}><option value="">없음</option>{Object.entries(urls).filter(([file])=>isAudio(file)).map(([file])=><option key={file} value={file}>{fileName(file)}</option>)}</select></Field><Field label={`볼륨 · ${Math.round((doc.bgm.volume||0)*100)}%`}><input type="range" min="0" max="1" step=".05" value={doc.bgm.volume||0} onChange={e=>commit(p=>({...p,bgm:{...p.bgm,volume:+e.target.value}}))}/></Field><label className="check-row"><input type="checkbox" checked={doc.bgm.duck_under_voice!==false} onChange={e=>commit(p=>({...p,bgm:{...p.bgm,duck_under_voice:e.target.checked}}))}/> 목소리 녹음 중 음악 자동 줄이기</label></div></div>}
-                {mode==='subtitles'&&<div className="inspector-scroll"><div className="tab-title"><span>자막 {cues.length}개</span><Button onClick={()=>{commit(p=>{p.subtitle.items=[...(p.subtitle.items||[]),{index:Math.max(0,...(p.subtitle.items||[]).map(s=>s.index))+1,start:Math.round(playhead*10)/10,end:Math.min(duration||playhead+4,playhead+4),text:'새 자막'}];return p;});setSelectedCue(cues.length)}}><Plus size={14}/> 자막</Button></div><div className="inline-actions"><Button onClick={()=>void importSrt()}><Upload size={15}/> SRT 가져오기</Button><Button onClick={()=>void saveSrt()} disabled={!cues.length}><Download size={15}/> SRT 저장</Button></div><div className="subtitle-list">{cues.map((cue,i)=><button key={i} className={`subtitle-entry ${selectedCue===i?'selected':''}`} onClick={()=>{setSelectedCue(i);setPlayhead(cue.start)}}><span className="cue-number">{String(cue.index).padStart(2,'0')}</span><div><strong>{cue.text}</strong><small>{fmtShort(cue.start)} – {fmtShort(cue.end)}</small></div></button>)}</div>{selectedSubtitle&&selectedCue!==null&&<div className="inspector-section"><div className="sub-title">선택 자막 편집</div><Field label="자막 문장"><textarea rows={3} value={selectedSubtitle.text} onChange={e=>patchCue(selectedCue,{text:e.target.value})}/></Field><div className="field-row"><Field label="시작 (초)"><input type="number" step=".1" min="0" value={selectedSubtitle.start} onChange={e=>patchCue(selectedCue,{start:Math.max(0,+e.target.value)})}/></Field><Field label="종료 (초)"><input type="number" step=".1" min="0" value={selectedSubtitle.end} onChange={e=>patchCue(selectedCue,{end:Math.max(0,+e.target.value)})}/></Field></div><Button variant="danger" onClick={()=>{commit(p=>{p.subtitle.items?.splice(selectedCue,1);return p;});setSelectedCue(null)}}><Trash2 size={15}/> 이 자막 삭제</Button></div>}<div className="inspector-section"><div className="sub-title">전체 자막 스타일</div><Field label="글자 크기"><input type="number" min="8" max="300" value={doc.subtitle.style?.size||52} onChange={e=>commit(p=>({...p,subtitle:{...p.subtitle,style:{...p.subtitle.style,size:clamp(+e.target.value,8,300)}}}))}/></Field><Field label="위치"><select value={doc.subtitle.style?.position||'bottom'} onChange={e=>commit(p=>({...p,subtitle:{...p.subtitle,style:{...p.subtitle.style,position:e.target.value}}}))}><option value="bottom">하단</option><option value="center">가운데</option><option value="top">상단</option></select></Field></div></div>}
-                {mode==='recording'&&<div className="inspector-scroll"><div className="record-hero"><div className="rec-symbol"><Mic2 size={23}/></div><strong>사람 목소리 녹음</strong><p>기존 Python Recorder를 호출하여 WAV 파일로 저장합니다.</p></div><Field label="마이크 입력"><div className="path-picker"><select value={device??''} onChange={e=>setDevice(e.target.value===''?null:+e.target.value)}><option value="">기본 장치</option>{devices.map(d=><option key={d.index} value={d.index}>{d.name}</option>)}</select><IconButton title="장치 새로고침" onClick={()=>void fetchDevices()}><RotateCcw size={16}/></IconButton></div></Field><div className="level-meter"><div className="level-label"><span>입력 레벨</span><strong>{micLevel.toFixed(0)} dB</strong></div><div className="meter"><div style={{width:`${clamp((micLevel+70)/65*100,0,100)}%`}}/></div></div><div className="rec-context"><span>녹음 대상</span><strong>{selectedSubtitle?`자막 ${selectedSubtitle.index}: ${selectedSubtitle.text}`:'자유 녹음 (타임라인 현재 위치)'}</strong></div><Button variant={isRecording?'danger':'primary'} onClick={()=>void(isRecording?stopRec():startRec())}>{isRecording?<><Square size={17}/> 녹음 종료</>:<><Mic2 size={17}/> 녹음 시작</>}</Button><div className="inspector-section"><div className="tab-title">녹음된 테이크 <Pill tone="active">{doc.dubbing.takes.length}개</Pill></div>{doc.dubbing.takes.map((take,i)=><div className="take-entry" key={i}><div><AudioLines size={17}/><span><strong>{fileName(take.file)}</strong><small>{take.subtitle?`자막 ${take.subtitle}`:'자유 녹음'} · 위치 {fmtShort(take.offset||0)}</small></span></div><IconButton title="녹음 파일 위치" onClick={()=>void window.compose.project.showFile(take.file)}><FolderOpen size={14}/></IconButton></div>)}{!doc.dubbing.takes.length&&<div className="empty-side">아직 녹음된 목소리가 없습니다.</div>}</div><div className="notice muted-notice"><Info size={15}/><span>초기 버전에는 자막별 자동 프리롤·연속 녹음·파형 편집·Whisper 자막 정렬이 연결되지 않았습니다. 기존 더빙 프로그램 기능을 추후 이식합니다.</span></div></div>}
-                {mode==='effects'&&<div className="inspector-scroll">{active&&selectedClip!=null?<><div className="mini-selected"><div className="media-icon">{active.type==='image'?<ImageIcon size={19}/>:<Film size={19}/>}</div><div><strong>{active.label||fileName(active.file)}</strong><small>선택 클립 효과</small></div></div><Field label="영상 움직임"><select value={active.motion||'none'} onChange={e=>patchClip(selectedClip,{motion:e.target.value})}><option value="none">없음</option><option value="zoom_in">천천히 확대</option><option value="zoom_out">천천히 축소</option><option value="pan_left">왼쪽 이동</option><option value="pan_right">오른쪽 이동</option><option value="ken_burns">켄 번즈</option></select></Field><Field label="움직임 강도"><input type="range" min="0" max=".5" step=".01" value={active.motion_strength??.15} onChange={e=>patchClip(selectedClip,{motion_strength:+e.target.value})}/></Field><Field label="색감"><select value={active.look||'none'} onChange={e=>patchClip(selectedClip,{look:e.target.value})}>{[['none','원본'],['warm','따뜻하게'],['cool','차갑게'],['vintage','빈티지'],['bw','흑백'],['sepia','세피아'],['vivid','선명하게'],['cinematic','영화톤']].map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></Field>{([['brightness','밝기',-.5,.5,.05],['contrast','대비',.5,2,.05],['saturation','채도',0,3,.05]] as const).map(([key,label,min,max,step])=><Field key={key} label={`${label} · ${Number(active[key]??(key==='brightness'?0:1)).toFixed(2)}`}><input type="range" min={min} max={max} step={step} value={Number(active[key]??(key==='brightness'?0:1))} onChange={e=>patchClip(selectedClip,{[key]:+e.target.value})}/></Field>)}<Button onClick={()=>patchClip(selectedClip,{motion:'none',look:'none',motion_strength:.15,brightness:0,contrast:1,saturation:1})}><RotateCcw size={15}/> 효과 초기화</Button></>:<div className="empty-side">타임라인에서 클립을 선택하면 움직임과 색감을 설정할 수 있습니다.</div>}<div className="notice muted-notice"><Info size={16}/><span>효과는 저장된 프로젝트 값을 기반으로 기존 FFmpeg 엔진에서 렌더링됩니다. 상단 화면의 단순 미리보기에는 최종 필터가 반영되지 않습니다.</span></div></div>}
-                {mode==='export'&&<div className="inspector-scroll"><div className="sub-title">출력 설정</div><div className="field-row"><Field label="가로"><input type="number" min="320" step="2" value={doc.output.width} onChange={e=>commit(p=>({...p,output:{...p.output,width:Math.max(2,+e.target.value||1920)}}))}/></Field><Field label="세로"><input type="number" min="240" step="2" value={doc.output.height} onChange={e=>commit(p=>({...p,output:{...p.output,height:Math.max(2,+e.target.value||1080)}}))}/></Field></div><div className="field-row"><Field label="FPS"><select value={doc.output.fps} onChange={e=>commit(p=>({...p,output:{...p.output,fps:+e.target.value}}))}>{[24,25,30,60].map(n=><option key={n} value={n}>{n}</option>)}</select></Field><Field label="화면 맞춤"><select value={doc.output.fit} onChange={e=>commit(p=>({...p,output:{...p.output,fit:e.target.value}}))}><option value="cover">화면 채우기</option><option value="contain">전체 표시</option></select></Field></div><Field label="출력 파일"><input value={doc.output.file} onChange={e=>commit(p=>({...p,output:{...p.output,file:e.target.value}}))}/></Field><Field label="기본 전환"><select value={doc.transition.type} onChange={e=>commit(p=>({...p,transition:{...p.transition,type:e.target.value}}))}><option value="none">컷</option><option value="crossfade">크로스페이드</option><option value="fade">페이드</option><option value="dissolve">디졸브</option></select></Field><div className="inline-actions"><Button onClick={()=>void render(true)} disabled={renderStatus.busy||!clips.length}><RotateCcw size={16}/> 미리보기 렌더</Button><Button variant="primary" onClick={()=>void render(false)} disabled={renderStatus.busy||!clips.length}><Download size={16}/> 최종 MP4</Button></div>{renderStatus.busy&&<Button variant="danger" onClick={()=>void cancelRender()}><Square size={16}/> 렌더링 취소</Button>}
-                <div className="progress-card"><div><strong>{renderStatus.busy?'렌더링 중':renderStatus.output?'렌더링 완료':'렌더 대기'}</strong><span>{Math.round(renderStatus.progress*100)}%</span></div><div className="progress-track"><span style={{width:`${renderStatus.progress*100}%`}}/></div><p>{renderStatus.message||'기존 Python FFmpeg 엔진으로 최종 영상을 생성합니다.'}</p>{renderStatus.output&&<Button onClick={()=>void openPreview()}><FolderOpen size={15}/> 출력 파일 보기</Button>}</div><div className="notice"><Info size={17}/><span>렌더 기능은 기존 dubbing Python 환경을 연결한 경우에만 실행됩니다. 이 앱에 별도 렌더 엔진을 탑재하지 않습니다.</span></div></div>}
-              </aside>
-            </div>}
-        </main><footer className="statusbar"><span><span className="status-dot connected"/> {dirty?'저장되지 않은 변경 사항':'프로젝트 저장됨'} · {opened?.path.split(/[\\/]/).pop()}</span><span>{BRAND.nameEn} · {engineStatus.connected?'Engine Connected':'Engine Idle'} · 0.1.0</span></footer></>}
+        <div className="nav-groups"><div className="nav-label">작업 공간</div>
+          <button className={`nav-link ${view==='home'?'active':''}`} onClick={()=>go('home')}><HomeIcon size={17}/><span>시작하기</span></button>
+          <div className="nav-label nav-separator">편집 단계</div>
+          {STEPS.map((id,i)=>{const Icon=ICONS[id];const ok=!!doc&&stepDone(doc,id);return <button key={id} className={`nav-link step-link ${view===id?'active':''} ${!doc?'disabled-link':''} ${ok?'done':''}`} onClick={()=>go(id)} title={doc?STEP_HINTS[id]:'작품을 먼저 열어 주세요'}><span className="step-num">{ok?<Check size={12}/>:i+1}</span><Icon size={16}/><span>{STEP_TITLES[id]}</span></button>;})}
+        </div>
+        <div className="sidebar-bottom"><button className={`nav-link ${view==='settings'?'active':''}`} onClick={()=>go('settings')}><Settings2 size={17}/> <span>환경 설정</span></button></div>
+      </aside>
+      <div className="main-shell">
+        <main className="main-content">{body}</main>
+        <footer className="statusbar">
+          <div className={`status-save save-${doc?saveState:'saved'}`}><span className="status-indicator"/>{doc?`${saveState==='saved'?'자동 저장됨':saveState==='saving'?'저장 중…':'저장 대기'} · ${opened?.path.split(/[\\/]/).pop()||''}`:'모든 작업은 이 컴퓨터에 저장돼요'}</div>
+          {doc&&<div className="status-mid"><span>장면 {doc.clips.length}개</span><span>자막 {doc.subtitle.items?.length||0}개</span><span title="완료한 편집 단계">{done}/{STEPS.length-1} 단계</span></div>}
+          <div className="status-right">{render.busy&&<button className="status-job" onClick={()=>go('export')}><Sparkles size={12}/> 영상 만드는 중 {Math.round(render.progress*100)}%</button>}<span>FFmpeg {ffmpeg?.ok?'준비됨':'확인 필요'}</span><span>{BRAND.nameKo} v{version||'—'}</span></div>
+        </footer>
+      </div>
+      {toastMsg&&<div className={`toast toast-${toastMsg.type}`} role="status"><Info size={17}/><span>{toastMsg.text}</span><button className="icon-btn" onClick={()=>setToastMsg(null)} aria-label="닫기"><X size={16}/></button></div>}
     </div>
-    {toast&&<div className="toast" role="status"><Info size={16}/>{toast}<button onClick={()=>setToast('')}><X size={15}/></button></div>}
-    {showAI&&doc&&<div className="modal-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)setShowAI(false)}}><div className="modal"><div className="modal-heading"><div><span className="eyebrow">AI EDIT PLAN</span><h2>AI 편집 구성 JSON 가져오기</h2><p>기존 Video Composer v2 JSON을 붙여넣으면 타임라인에 반영합니다.</p></div><IconButton title="닫기" onClick={()=>setShowAI(false)}><X size={20}/></IconButton></div><textarea rows={13} value={aiText} onChange={e=>setAiText(e.target.value)} spellCheck={false} placeholder='{"version":2,"title":"...","clips":[...],"subtitle":{...}}'/><div className="modal-actions"><Pill tone="warning">자동 AI 요청 기능 아님</Pill><Button onClick={()=>setShowAI(false)}>취소</Button><Button variant="primary" onClick={applyAI}><Check size={16}/> JSON 적용</Button></div></div></div>}
-    {showName&&doc&&<div className="modal-wrap"><div className="modal small-modal"><div className="modal-heading"><div><span className="eyebrow">PROJECT NAME</span><h2>프로젝트 제목</h2></div></div><input autoFocus value={projectName||doc.title} onChange={e=>setProjectName(e.target.value)}/><div className="modal-actions"><Button onClick={()=>{setShowName(false);setProjectName('')}}>취소</Button><Button variant="primary" onClick={()=>{commit(p=>({...p,title:projectName||p.title}));setShowName(false);setProjectName('')}}>변경</Button></div></div></div>}
-    {showHelp&&<div className="modal-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)setShowHelp(false)}}><div className="modal"><div className="modal-heading"><div><span className="eyebrow">QUICK GUIDE</span><h2>고모 편집실 시작하기</h2><p>고모 창작실의 결과를 가져와 목소리를 입히는 편집 공간</p></div><IconButton title="닫기" onClick={()=>setShowHelp(false)}><X size={20}/></IconButton></div><div className="help-steps">{[['01','프로젝트 열기','고모 창작실의 composer_project.json 또는 기존 Video Composer v2 JSON을 엽니다.'],['02','미디어 확인','이미지·영상·음악 파일을 확인하고 타임라인 순서와 길이를 수정합니다.'],['03','자막·목소리','자막을 다듬고, 환경 설정에서 기존 dubbing Python 경로를 연결해 녹음합니다.'],['04','영상 출력','기존 Python FFmpeg 엔진으로 미리보기와 최종 MP4를 제작합니다.']].map(([n,t,d])=><div key={n}><span>{n}</span><strong>{t}</strong><p>{d}</p></div>)}</div><div className="notice"><ShieldAlert size={17}/> 초기 v0.1은 UI 현대화와 핵심 데이터 연결판입니다. 이전 PySide6 편집기의 모든 고급 기능을 아직 이식하지 않았습니다.</div><div className="modal-actions"><Button variant="primary" onClick={()=>setShowHelp(false)}>확인</Button></div></div></div>}
-  </div>;
+  </EditorContext.Provider>;
 }
-function MonitorIcon(){return <Film size={16}/>}
-export default App;

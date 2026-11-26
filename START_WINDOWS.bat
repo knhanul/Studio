@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-if not exist "node_modules\electron" (
+if not exist "node_modules\ffmpeg-static" (
  echo Installing npm dependencies...
  call npm install
  if errorlevel 1 pause & exit /b 1

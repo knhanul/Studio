@@ -1,29 +1,32 @@
+// 고모 편집실 단위 테스트: src/shared/*.ts 를 임시 폴더에 CommonJS로 변환한 뒤 scripts/tests/*.test.mjs 실행
 import {createRequire} from 'node:module';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 const req=createRequire(import.meta.url);
 let ts;try{ts=req('typescript');}catch{ts=req(execFileSync('npm',['root','-g'],{encoding:'utf8'}).trim()+'/typescript');}
-import fs from 'node:fs';
-import vm from 'node:vm';
-import assert from 'node:assert/strict';
-import path from 'node:path';
-const projectFile=path.resolve('src/shared/project.ts');
-const code=fs.readFileSync(projectFile,'utf8');
-const js=ts.transpileModule(code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-const module={exports:{}};
-vm.runInNewContext(js,{exports:module.exports,module,require:()=>{throw Error('No runtime imports allowed here');},console,JSON,Math,Number,Array,String,Boolean,Date,RegExp,Object}, {filename:projectFile});
-const p=module.exports;
-let count=0;
-function test(label,fn){fn();count++;process.stdout.write(`✓ ${label}\n`);}
-test('v2 fresh project',()=>{const x=p.createProject('테스트');assert.equal(x.version,2);assert.equal(x.title,'테스트');assert.equal(x.clips.length,0);});
-test('media clip duration',()=>{assert.equal(p.clipDuration({file:'a.png',type:'image',duration:5.5}),5.5);});
-test('video trim respects speed',()=>{assert.equal(p.clipDuration({file:'a.mp4',type:'video',trim_start:2,trim_end:10,speed:2}),4);});
-test('target duration override',()=>{assert.equal(p.clipDuration({file:'a.mp4',type:'video',trim_end:10,fit_duration:3}),3);});
-test('timeline is contiguous',()=>{const x=p.createProject();x.clips=[{file:'a.png',type:'image',duration:4},{file:'b.png',type:'image',duration:6}];const t=p.timeline(x);assert.equal(t[1].start,4);assert.equal(p.totalDuration(x),10);});
-test('SRT round trip',()=>{const original=[{index:1,start:0.25,end:3.7,text:'첫 번째 자막'},{index:2,start:3.9,end:8.2,text:'두 번째 줄'}];const output=p.fromSrt(p.toSrt(original));assert.equal(output.length,2);assert.equal(output[0].start,0.25);assert.equal(output[1].text,'두 번째 줄');});
-test('normalize preserves unknown metadata',()=>{const x=p.normalizeProject({...p.createProject(),extra:{storyboard:'unchanged'}});assert.equal(x.extra.storyboard,'unchanged');});
-test('normalize preserves clip effects',()=>{const x=p.createProject();x.clips=[{file:'a.png',type:'image',look:'warm',motion:'ken_burns'}];assert.equal(p.normalizeProject(x).clips[0].motion,'ken_burns');});
-test('normalize rejects unknown version',()=>{assert.throws(()=>p.normalizeProject({version:99}),/지원되지/);});
-test('normalize rejects invalid data',()=>{assert.throws(()=>p.normalizeProject(null),/올바른/);});
-test('validProject warns without clips',()=>{assert.equal(p.validProject(p.createProject()).length,1);});
-test('time formatting',()=>{assert.equal(p.fmt(65.5),'01:05.5');});
-console.log(`\n${count} tests passed`);
+const root=path.resolve('.');
+const outDir=fs.mkdtempSync(path.join(os.tmpdir(),'gomo-studio-test-'));
+const sharedDir=path.join(root,'src','shared');
+for(const name of fs.readdirSync(sharedDir).filter(n=>n.endsWith('.ts'))){
+  const code=fs.readFileSync(path.join(sharedDir,name),'utf8');
+  const js=ts.transpileModule(code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+  fs.writeFileSync(path.join(outDir,name.replace(/\.ts$/,'.js')),js);
+}
+globalThis.__shared=(name)=>req(path.join(outDir,name+'.js'));
+let count=0,failed=0;
+globalThis.test=async(label,fn)=>{try{await fn();count++;process.stdout.write(`✓ ${label}\n`);}catch(e){failed++;process.stdout.write(`✗ ${label}\n  ${e&&e.stack||e}\n`);}};
+const testDir=path.join(root,'scripts','tests');
+for(const name of fs.readdirSync(testDir).filter(n=>n.endsWith('.test.mjs')).sort()){
+  process.stdout.write(`\n# ${name}\n`);
+  await import(pathToFileURL(path.join(testDir,name)).href);
+}
+fs.rmSync(outDir,{recursive:true,force:true});
+console.log(`\n${count} tests passed${failed?`, ${failed} failed`:''}`);
+if(failed)process.exit(1);
+// 기존 Python 브리지 테스트 (Python이 있을 때만)
+const py=['python','python3','py'].find(cmd=>spawnSync(cmd,['--version'],{stdio:'ignore',shell:false}).status===0);
+if(!py){console.log('\n(Python이 없어 engine/tests Python 테스트는 건너뜀)');}
+else{const r=spawnSync(py,['-m','unittest','discover','-s','engine/tests','-v'],{stdio:'inherit'});if(r.status!==0)process.exit(r.status||1);}

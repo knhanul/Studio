@@ -1,112 +1,120 @@
-# 고모 편집실 · GOMO Compose v0.1
+# 고모 편집실 · GOMO Studio v0.2
 
-**고모 미디어공방의 Windows 영상 편집 UI 초기 프로젝트.**
+**고모 창작실에서 만든 작품에 목소리를 입혀 MP4 영상으로 완성하는 Windows 데스크톱 앱.**
+고모 창작실(knhanul/Creator)과 한 세트이며, 화면 구성·디자인 토큰·테마를 창작실과 같게 맞췄습니다.
 
-고모 창작실(GOMO Create)이 생성한 `composer_project.json`과 기존 [영상 합성기](https://github.com/knhanul/dubbing)의 Video Composer v2 프로젝트를 열어 편집합니다. UI는 **Electron + React + TypeScript**로 신규 구축했습니다. 영상 합성/녹음은 **기존 Python 소스를 그대로** 사용하도록 별도 브리지를 제공합니다.
-
-> **초기판 알림:** 기존 PySide6 영상 합성기의 모든 UI 기능을 그대로 옮긴 완성판은 아닙니다. 아래 '작동 범위'를 확인하세요. GitHub 저장소의 Python 파일을 ZIP에 복사하거나 수정하지 않았습니다.
+- Electron + React + TypeScript (electron-vite)
+- 녹음: 앱 안에서 바로(마이크 → WAV). **Python 필요 없음**
+- 영상 만들기: 함께 설치되는 FFmpeg(`ffmpeg-static`). **Python 필요 없음**
+- 예전 Python 엔진(knhanul/dubbing) 연결은 `환경 설정 → 고급`에 선택 사항으로 남겨 두었습니다.
 
 ## 빠른 시작 (Windows)
 
-요구 사항: Windows 10/11, Node.js 22.12 이상, VS Code 권장. 렌더·녹음에는 별도로 기존 dubbing 소스와 `.venv`가 필요합니다.
+요구 사항: Windows 10/11, Node.js 22.12 이상, 마이크.
 
 ```powershell
-# 1) 이 ZIP을 압축 해제 후 VS Code에서 gomo-compose-studio 폴더 열기
-npm install
+git pull
+npm install      # FFmpeg(ffmpeg-static)도 이때 함께 내려받습니다
 npm run dev
 ```
 
-또는 `START_WINDOWS.bat` 더블클릭. 처음 실행 후 **프로젝트 열기** 메뉴에서
-`fixtures/demo_video_composer_v2.json`을 선택하면 동봉한 예시 이미지 3장과 자막이
-표시됩니다. 이는 UI 확인용 자료이며 실제 더빙 Python 환경이 없어도 열 수 있습니다.
-예시를 수정하여 보관하려면 **다른 이름으로 저장**을 이용하세요.
+또는 `START_WINDOWS.bat` 더블클릭.
 
-Windows 설치/Portable EXE 빌드:
+1. **창작실 작품 불러오기** → 창작실 「더빙 전달」로 내보낸 폴더 선택 (폴더를 창에 끌어다 놓아도 됨)
+2. **장면 구성** → 순서·길이·움직임·전환 확인
+3. **더빙 녹음** → 마이크 고르고, 3·2·1 뒤에 문장별 녹음
+4. **자막 다듬기** → 문구·시간·모양
+5. **배경음악** → 음악과 목소리 크기, 자동 줄이기
+6. **영상 내보내기** → 미리보기(빠르게) 또는 완성 영상 MP4
 
-```powershell
-npm run typecheck
-npm run test
-npm run dist:win
+## 화면 구성 (창작실과 같은 사무용 레이아웃)
+
+```text
+┌ 사이드바 ─────────┬ 문서 헤더 (단계 / 작품명 / 실행 취소·다시 실행 / 자동 저장됨 / 작업 폴더) ┐
+│ 고모 편집실        ├──────────────────────────────────────────────┬ 오른쪽 설정 패널 ┤
+│ GOMO Studio       │ 가운데 작업 공간 (미리보기 · 프롬프터 · 장면 줄) │ 선택한 장면/문장 │
+│ 현재 작품          │ 타임라인 (장면 · 더빙 · 자막 · 배경음악)          │                │
+│ 창작실 작품 불러오기 ├──────────────────────────────────────────────┴────────────────┤
+│ 시작하기 / 5단계    │ 하단 바: 안내 문구 ··························· [다음: …] (하나뿐) │
+│ 환경 설정          ├ 상태 표시줄: 자동 저장 · 장면/자막 수 · FFmpeg 상태 · 버전 ─────────┤
 ```
 
-결과: `release/` 하위에 NSIS 설치 파일 및 Portable EXE. **이번 ZIP에는 미리 빌드된 EXE가 없습니다.**
+## v0.2 기능
 
-## 기존 Python 엔진 연결
+**창작실 작품 불러오기**
+- `composer_project.json`(우선) 또는 `gomo-handoff.json`(creator.handoff.v1)을 자동 변환
+- 자막이 비어 있으면 `captions.srt`를 읽음, 영상 길이는 FFmpeg로 확인
+- 폴더 끌어다 놓기, 최근 작업 목록, 900ms 자동 저장, 실행 취소 60단계
 
-이전 더빙 프로그램 프로젝트가 `D:\\projects\\dubbing`에 있다면:
+**장면 구성**
+- 이미지/영상 바꾸기, 끌어서 순서 바꾸기, 보여 줄 시간, 영상 속도·앞부분 자르기·원래 소리
+- 화면 움직임(천천히 확대/축소, 좌우·상하 흐르기, 켄 번스) + 세기, 모든 장면에 적용
+- 전환: 바로 전환 / 서서히 바뀜 / 검은 화면 페이드 + 시간
 
-1. 기존 더빙 프로젝트 `run.bat`으로 초기 설치를 완료합니다. 원본 PySide6 프로그램이 정상 실행되는지 확인합니다.
-2. 고모 편집실 **환경 설정 → 기존 dubbing 소스 폴더**에 `D:\\projects\\dubbing` 설정.
-3. **Python 실행 파일**에는 `D:\\projects\\dubbing\\.venv\\Scripts\\python.exe` 선택.
-4. **경로 저장 → 연결 테스트**. `composer.schema` 임포트가 성공하면 연결됩니다.
-5. **목소리** 탭에서 마이크 장치를 조회하고 녹음합니다. **내보내기**에서 미리보기·최종 렌더를 호출합니다.
+**더빙 녹음**
+- 마이크 고르기, 입력 레벨 표시, 3·2·1 카운트다운
+- 지금 읽을 문장을 크게, 다음 문장 미리 보기, 해당 장면 썸네일
+- 문장별 녹음 → `takes/line_0001_v1.wav` … (다시 녹음해도 이전 파일은 지우지 않음)
+- 듣기·다시 녹음·지우기·크기·앞뒤 자르기(무음 자동 자르기), 음성 파일 불러오기
+- "저장하고 다음 문장"(N), 녹음 길이에 장면·자막 자동 맞추기
+- 단축키: R 녹음/정지 · N 다음 문장 · Esc 취소
 
-Python Worker는 `engine/bridge.py`이고, 기존 저장소의 `composer.schema`, `composer.render.runner`, `composer.render.ffmpeg_builder`, `composer.dubbing.recorder`를 원본 그대로 import합니다. Electron ↔ Python 사이에 **표준 입출력 JSON Lines**를 사용하여 로컬 포트를 열지 않습니다. 로그인 정보/API 키는 필요하지 않습니다.
+**자막 다듬기**
+- 문구·시작/끝 시간, ±0.1초 미세 조정, 재생 위치로 시작/끝 지정, 녹음에 맞추기
+- SRT 불러오기/저장, 영상에 새기기 켜기/끄기, 위치·크기·색·외곽선·굵게·배경 상자·전체 시간 이동
 
-## 동작하는 기능 (v0.1)
+**배경음악**
+- 음악 파일, 목소리/배경음악/원본 영상 소리 크기
+- 목소리 나올 때 자동 줄이기(조금/보통/많이), 처음·끝 페이드, 반복 재생
 
-- 기존 `project.json`/`composer_project.json` **v2 열기·저장·다른 이름 저장** (알 수 없는 JSON 필드 최대한 보존)
-- 새 프로젝트 만들기, 작품 이름 변경, 기본 출력 설정
-- 이미지/동영상/음악 파일을 프로젝트의 `media/` 폴더에 **복사**하여 연결
-- 타임라인 클립 **드래그 순서 이동**, 시간·속도·전환 수정, 실행 취소/다시 실행
-- 자막 JSON `subtitle.items` 편집, SRT 가져오기·내보내기, 화면 오버레이
-- 원본 미디어의 단순 이미지/영상 확인 (**최종 FFmpeg 렌더 결과와 다를 수 있음**)
-- 선택 클립 색감·움직임 설정 (설정은 프로젝트에 저장, 최종 효과는 Python 렌더에 반영)
-- AI 편집안 **JSON 붙여넣기 및 적용**, 단 AI 웹 자동 요청은 미구현
-- Python 원본 Recorder 기반 **마이크 WAV 녹음**, `dubbing.takes`에 연결
-- Python 원본 render_project 기반 **360p 임시 미리보기 / 최종 MP4 렌더**, 진행률·취소 이벤트
-- 브랜드 중앙 설정: `src/shared/brand.ts`. GOMO → NUNI 표기 변경 가능
+**타임라인** — 장면·더빙·자막·배경음악 4줄, 확대/축소, 눌러서 이동
 
-## 아직 없는 기능 (중요)
+**영상 내보내기**
+- FFmpeg MP4(H.264 + AAC), 진행률·취소, 완성 후 바로 재생 / 폴더에서 보기
+- 미리보기(작은 화면, 빠르게) / 완성 영상, 화면 크기 프리셋, fps, 파일 이름, 처음·끝 페이드
+- 렌더 방식은 dubbing의 `ffmpeg_builder.py`를 따름: 장면별 중간 파일 → xfade 이어 붙이기 → ASS 자막 → 목소리·배경음악(sidechain 자동 줄이기) 믹스
 
-- 기존 PySide6의 영상 프레임 정확 미리보기, 자동 재렌더 캐시 UI, 진짜 멀티트랙 미디어 믹싱 프리뷰
-- 정확한 소스 영상 길이 자동 탐색(새로 추가한 영상은 임시 4초로 시작하며 수동 길이 변경 필요)
-- 타임라인 양 끝 핸들 직접 드래그, 다중선택·트랙 잠금·자석 기능, 전환 블록 직접 조작
-- 자막별 자동 프리롤 및 연속 녹음, 레코딩 여러 버전 선택, 파형 편집
-- Whisper 음성 인식/자동 자막 정렬, 고급 출력 옵션
-- 최종 Windows 실행 및 실제 렌더/녹음 실환경 통합 테스트 (**개발 환경에서 원본 저장소를 다운로드할 수 없어 미실시**)
+## 일부러 뺀 기능 (나중에 천천히)
 
-위 기능은 원본 프로그램에 구현된 기능이며, 새 UI에 순차적으로 연결하는 로드맵을 `docs/ROADMAP.md`에 명시했습니다. 현재 사용 중인 기존 프로그램을 대체하려면 필수 회귀 테스트가 필요합니다.
+Whisper 자동 자막/정렬, 색감·필터·효과 UI, 녹음 여러 버전 고르기, 3가지 외 전환 효과, 영상 클립 움직임,
+NVENC 하드웨어 인코딩, 트랙 잠금/솔로, 타임라인 핸들 끌어서 자르기, 자막 트랙 별도 첨부(soft sub), AI 편집안.
+
+## 개발 명령
+
+```powershell
+npm run typecheck   # 타입 검사
+npm test            # 단위 테스트 (Python 있으면 엔진 브리지 테스트도)
+npm run test:render # 실제 FFmpeg로 짧은 영상 만들어 보기
+npm run build
+npm run dist:win    # 설치 파일 + Portable EXE (release/)
+```
+
+## 구조
+
+```text
+src/main/index.ts      Electron 창 · IPC (프로젝트/미디어/녹음 저장/렌더/설정)
+src/main/ffmpeg.ts     FFmpeg 찾기(직접 지정 → 함께 설치 → PATH) · 길이 확인 · 렌더 실행
+src/main/engine.ts     (선택) 예전 Python 엔진 브리지
+src/preload/index.ts   renderer에 열어 준 API (window.compose)
+src/shared/            데이터 모델·타임라인·자막·창작실 변환·WAV·렌더 계획 (순수 함수, 테스트 대상)
+src/renderer/          App(셸) · pages(단계별 화면) · components · hooks(녹음/미리듣기)
+src/renderer/styles/   base.css(창작실 디자인 시스템 그대로) + studio.css(편집실 전용)
+scripts/tests/         단위 테스트
+```
 
 ## 프로젝트 형식
 
-기존 저장소 기준 `version: 2` JSON. 상대 경로는 프로젝트 JSON 파일이 있는 폴더 기준입니다. `subtitle.items`의 `index`, `start`, `end`, `text`를 지원하고, `dubbing.takes`는 `file`, `subtitle`, `offset` 등의 필드를 유지합니다.
+Video Composer `version: 2` JSON(dubbing과 같은 형식). 상대 경로는 프로젝트 JSON 폴더 기준.
+- 가져온 미디어: `media/`, 녹음: `takes/`, 미리보기: `preview_gomo.mp4`, 완성: `output.file`
 
-- 새 프로젝트: 사용자 앱 데이터 폴더의 `projects/<UUID>/project.json`
-- 가져온 미디어: 해당 프로젝트 옆 `media/` 폴더
-- 녹음 파일: `takes/line_0001_v1.wav` 등
-- 임시 렌더: `preview_gomo.mp4`
-- 최종 렌더: 프로젝트의 `output.file`
+## Windows 참고
 
-고모 창작실에서 `composer_project.json`을 만든 경우 그 프로젝트 폴더 **전체를 유지한 상태에서** 고모 편집실에서 JSON을 여세요. 파일 경로만 전달받는 경우에는 해당 미디어가 원래 상대 경로에 있어야 합니다.
-
-### 개발 구조
-
-```text
-gomo-compose-studio/
-  src/main/            Electron 보안 경계 · 파일/미디어 · Python IPC
-  src/preload/         제한된 renderer API
-  src/renderer/        React 데스크톱 UI, CSS
-  src/shared/          브랜드, 데이터 모델, SRT와 타임라인 계산
-  engine/bridge.py     원본 Python 모듈 호출만 하는 경량 JSONL worker
-  engine/tests/        백엔드 브리지 기본 테스트
-  scripts/test.mjs     프로젝트 로직 단위 테스트
-  docs/                아키텍처, 개발 순서, 품질 검수표
-```
+- **마이크:** Windows 설정 → 개인 정보 → 마이크 → "데스크톱 앱이 마이크에 액세스하도록 허용" 켜기.
+- **FFmpeg:** `npm install` 때 함께 받습니다. 회사망 등으로 실패하면 `환경 설정 → FFmpeg`에서 ffmpeg.exe를 직접 지정.
+- **자막 글꼴:** 기본 `Malgun Gothic`(C:\Windows\Fonts)을 사용합니다.
 
 ## 보안·브랜드
 
-- `nodeIntegration:false`, `contextIsolation:true` 및 preload API 사용.
-- `gomo-media://`는 Electron main 프로세스가 등록한 파일만 읽습니다.
-- Python 엔진 경로를 사용자가 직접 선택하며, 외부 포트를 열지 않습니다.
-- NUNI로 변경하려면 **표시용 텍스트/색상**을 `src/shared/brand.ts`와 스타일 파일에서 변경합니다. 설치 appId, 프로젝트 저장 경로 등은 이전 설치와 호환성을 위해 고정해야 합니다.
-- 원본 `knhanul/dubbing` 소스는 포함되지 않으며, 기존 저장소에 적용할 패치도 포함하지 않습니다.
-
-## 확인한 공개 근거
-
-- https://github.com/knhanul/dubbing/blob/main/README.md
-- https://github.com/knhanul/dubbing/blob/main/composer/schema.py
-- https://github.com/knhanul/dubbing/blob/main/composer/render/runner.py
-- https://github.com/knhanul/dubbing/blob/main/composer/dubbing/recorder.py
-
-관련 코드 및 라이선스는 원본 저장소의 최신 변경 사항을 별도 확인하세요.
+- `nodeIntegration:false`, `contextIsolation:true`, preload API만 사용. `gomo-media://`는 허용된 파일만 읽음.
+- 마이크 권한은 앱 창 안에서만 허용. 외부 포트를 열지 않음.
+- 표시 이름은 `src/shared/brand.ts`. appId·저장 경로는 이전 설치와 호환되도록 그대로 둠.

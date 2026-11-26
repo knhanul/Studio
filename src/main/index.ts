@@ -1,51 +1,155 @@
-import {app,BrowserWindow,dialog,ipcMain,protocol,net,shell} from 'electron';
-import {readFile,writeFile,mkdir,copyFile,stat,readdir} from 'node:fs/promises';
+import {app,BrowserWindow,dialog,ipcMain,protocol,net,session,shell} from 'electron';
+import {readFile,writeFile,mkdir,copyFile,readdir,rename,stat} from 'node:fs/promises';
 import {existsSync,readFileSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {EngineController,EngineConfig} from './engine';
-import {createProject,normalizeProject,toSrt} from '../shared/project';
-import type {ComposerProject,ProjectState,SubtitleItem} from '../shared/types';
+import {probeMedia,renderProject,resolveFfmpeg} from './ffmpeg';
+import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,normalizeProject,toSrt} from '../shared/project';
+import type {ComposerProject,FfmpegStatus,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
 
-protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
+protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:true}}]);
 let win:BrowserWindow|null=null;
 let currentPath='';
 const mediaMap=new Map<string,string>();
 let config:EngineConfig={repo:'',python:''};
+let settings:{ffmpeg:string}={ffmpeg:''};
+let ffmpegStatus:FfmpegStatus|null=null;
+let renderAbort:AbortController|null=null;
 const engine=new EngineController(()=>win);
+const IMAGE=['png','jpg','jpeg','webp','bmp','gif'],VIDEO=['mp4','mov','webm','m4v','mkv'],AUDIO=['mp3','wav','m4a','flac','ogg','aac'];
 const configPath=()=>path.join(app.getPath('userData'),'engine-settings.json');
+const settingsPath=()=>path.join(app.getPath('userData'),'studio-settings.json');
+const recentPath=()=>path.join(app.getPath('userData'),'recent-projects.json');
 function dir(){return currentPath?path.dirname(currentPath):app.getPath('documents');}
 function ensureProject(){if(!currentPath)throw new Error('프로젝트를 먼저 열어 주세요.');return currentPath;}
-async function atomicWrite(file:string,text:string){await mkdir(path.dirname(file),{recursive:true});const tmp=file+'.tmp-'+randomUUID();await writeFile(tmp,text,'utf8');const fs=await import('node:fs/promises');await fs.rename(tmp,file);}
-async function save(data:ComposerProject,target=currentPath):Promise<ProjectState>{if(!target)throw new Error('저장 경로가 없습니다.');const doc=normalizeProject(data);if(doc.version!==2)throw new Error('v1 프로젝트는 구버전에서 v2로 변환 후 저장하세요.');await atomicWrite(target,JSON.stringify(doc,null,2));currentPath=target;return {path:target,data:doc,updatedAt:new Date().toISOString()};}
+const extOf=(f:string)=>path.extname(f).slice(1).toLowerCase();
+const kindOf=(f:string)=>IMAGE.includes(extOf(f))?'image':VIDEO.includes(extOf(f))?'video':AUDIO.includes(extOf(f))?'audio':['srt','vtt'].includes(extOf(f))?'subtitle':'other';
+async function atomicWrite(file:string,text:string|Buffer){await mkdir(path.dirname(file),{recursive:true});const tmp=file+'.tmp-'+randomUUID();await writeFile(tmp,text);await rename(tmp,file);}
+function ffmpeg(){if(!ffmpegStatus)ffmpegStatus=resolveFfmpeg(settings.ffmpeg);return ffmpegStatus;}
+
+async function readRecent():Promise<RecentProject[]>{try{const list=JSON.parse(await readFile(recentPath(),'utf8')) as RecentProject[];return Array.isArray(list)?list.filter(r=>r&&typeof r.path==='string'):[];}catch{return [];}}
+async function remember(file:string,title:string){const list=(await readRecent()).filter(r=>path.resolve(r.path)!==path.resolve(file));list.unshift({path:file,title,openedAt:new Date().toISOString()});await atomicWrite(recentPath(),JSON.stringify(list.slice(0,12),null,2)).catch(()=>{});}
+
+async function save(data:ComposerProject,target=currentPath):Promise<ProjectState>{if(!target)throw new Error('저장 경로가 없습니다.');const doc=normalizeProject(data);if(doc.version!==2)throw new Error('v1 프로젝트는 구버전에서 v2로 변환 후 저장하세요.');await atomicWrite(target,JSON.stringify(doc,null,2));currentPath=target;await remember(target,doc.title);return {path:target,data:doc,updatedAt:new Date().toISOString()};}
 function remapMedia(data:ComposerProject,oldBase:string,newBase:string){const rel=(s?:string|null)=>s?path.relative(newBase,path.resolve(oldBase,s)).replace(/\\/g,'/'):s;return {...data,clips:data.clips.map(c=>({...c,file:rel(c.file)||c.file})),bgm:{...data.bgm,file:rel(data.bgm.file)},subtitle:{...data.subtitle,file:rel(data.subtitle.file)},dubbing:{...data.dubbing,takes:data.dubbing.takes.map(t=>({...t,file:rel(t.file)||t.file}))}};}
-function mediaUrl(file:string){if(!file)return '';const resolved=path.resolve(dir(),file);if(!existsSync(resolved))return '';const ext=path.extname(resolved).toLowerCase();if(!['.png','.jpg','.jpeg','.webp','.gif','.bmp','.mp4','.mov','.webm','.m4v','.mp3','.wav','.m4a','.ogg','.flac'].includes(ext))return '';const id=randomUUID();mediaMap.set(id,resolved);return `gomo-media://media/${id}`;}
-function isSafeDoc(p:unknown):p is ComposerProject {return Boolean(p&&typeof p==='object'&&Array.isArray((p as ComposerProject).clips));}
+function mediaUrl(file:string){if(!file)return '';const resolved=path.resolve(dir(),file);if(!existsSync(resolved))return '';if(!['image','video','audio'].includes(kindOf(resolved)))return '';const id=randomUUID();mediaMap.set(id,resolved);return `gomo-media://media/${id}`;}
+
+/** 영상 클립의 원본 길이를 FFmpeg로 채운다 (없을 때만) */
+async function fillVideoDurations(doc:ComposerProject,base:string):Promise<ComposerProject>{
+  const st=ffmpeg();if(!st.ok)return doc;
+  for(const c of doc.clips){if(c.type!=='video'||(typeof c.source_duration==='number'&&c.source_duration>0))continue;const f=path.resolve(base,c.file);if(!existsSync(f))continue;const info=await probeMedia(st.path,f);if(info.duration)c.source_duration=Math.round(info.duration*1000)/1000;}
+  return doc;
+}
+/** 자막 항목이 비어 있으면 같은 폴더의 SRT(subtitle.file 또는 captions.srt)를 읽는다 */
+async function fillSubtitles(doc:ComposerProject,base:string):Promise<boolean>{
+  if(doc.subtitle.items?.length)return false;
+  for(const name of [doc.subtitle.file,'captions.srt'].filter(Boolean) as string[]){const f=path.resolve(base,name);if(existsSync(f)){const items=fromSrt(await readFile(f,'utf8'));if(items.length){doc.subtitle.items=items;return true;}}}
+  return false;
+}
+async function openJson(file:string):Promise<ProjectState>{
+  const raw=JSON.parse((await readFile(file,'utf8')).replace(/^\uFEFF/,''));
+  if(isCreatorHandoff(raw))return openFolder(path.dirname(file));
+  const doc=normalizeProject(raw);if(doc.version!==2)throw new Error('프로젝트 v1은 기존 영상 합성기에서 v2로 마이그레이션한 다음 여세요.');
+  const base=path.dirname(file);const loadedSrt=await fillSubtitles(doc,base);await fillVideoDurations(doc,base);
+  currentPath=file;await remember(file,doc.title);
+  return {path:file,data:doc,updatedAt:new Date().toISOString(),notice:loadedSrt?'자막 파일(SRT)을 함께 불러왔어요.':undefined};
+}
+/** 고모 창작실 제작 패키지 폴더 열기 */
+async function openFolder(folder:string):Promise<ProjectState>{
+  const composer=path.join(folder,'composer_project.json');
+  if(existsSync(composer)){const s=await openJson(composer);return {...s,notice:`고모 창작실 작품 「${s.data.title}」을(를) 불러왔어요.${s.notice?' '+s.notice:''}`};}
+  const handoffFile=path.join(folder,'gomo-handoff.json');
+  if(existsSync(handoffFile)){
+    const raw=JSON.parse((await readFile(handoffFile,'utf8')).replace(/^\uFEFF/,''));
+    if(!isCreatorHandoff(raw))throw new Error('gomo-handoff.json 형식을 읽을 수 없어요.');
+    const doc=fromCreatorHandoff(raw);
+    if(!doc.clips.length)throw new Error('창작실 패키지에 이미지·영상이 연결된 장면이 없어요. 창작실 미디어 보관함에서 장면 미디어를 먼저 연결해 주세요.');
+    await fillSubtitles(doc,folder);await fillVideoDurations(doc,folder);
+    const s=await save(doc,composer);return {...s,notice:`고모 창작실 패키지를 편집 프로젝트로 바꿔 composer_project.json으로 저장했어요.`};
+  }
+  const jsons=(await readdir(folder).catch(()=>[] as string[])).filter(n=>/^(project|.*composer.*)\.json$/i.test(n));
+  for(const n of jsons){try{return await openJson(path.join(folder,n));}catch{/* 다음 후보 */}}
+  throw new Error('이 폴더에서 고모 창작실 패키지(composer_project.json · gomo-handoff.json)를 찾지 못했어요.');
+}
+async function openAny(target:string):Promise<ProjectState>{const s=await stat(target);return s.isDirectory()?openFolder(target):openJson(target);}
+async function uniqueName(folder:string,base:string,ext:string){await mkdir(folder,{recursive:true});const used=new Set((await readdir(folder)).map(s=>s.toLowerCase()));let n=1;while(used.has(`${base}${n}.${ext}`.toLowerCase()))n++;return `${base}${n}.${ext}`;}
+function send(ev:RenderEvent){win?.webContents.send('render:event',ev);}
 
 function registerIpc(){
- ipcMain.handle('project:new',async (_e,title?:string)=>{const id=randomUUID();const file=path.join(app.getPath('userData'),'projects',id,'project.json');return save(createProject(title||'제목 없음'),file);});
- ipcMain.handle('project:open',async(_e,fileArg?:string):Promise<ProjectState|null>=>{let file=fileArg;if(!file){const r=await dialog.showOpenDialog(win!,{properties:['openFile'],filters:[{name:'Video Composer JSON',extensions:['json']}]});if(r.canceled)return null;file=r.filePaths[0];}const doc=normalizeProject(JSON.parse(await readFile(file!,'utf8')));if(doc.version!==2)throw new Error('프로젝트 v1은 기존 영상 합성기에서 v2로 마이그레이션한 다음 여세요.');currentPath=file!;return {path:file!,data:doc,updatedAt:new Date().toISOString()};});
- ipcMain.handle('project:save',async(_e,data:ComposerProject)=>save(data));
- ipcMain.handle('project:saveAs',async(_e,data:ComposerProject)=>{ensureProject();const r=await dialog.showSaveDialog(win!,{defaultPath:path.join(app.getPath('documents'),path.basename(currentPath)),filters:[{name:'Video Composer JSON',extensions:['json']}]});if(r.canceled||!r.filePath)return null;const doc=remapMedia(data,dir(),path.dirname(r.filePath));return save(doc,r.filePath);});
- ipcMain.handle('project:current',()=>currentPath);
- ipcMain.handle('media:import',async()=>{ensureProject();const res=await dialog.showOpenDialog(win!,{properties:['multiSelections','openFile'],filters:[{name:'미디어',extensions:['png','jpg','jpeg','webp','bmp','gif','mp4','mov','webm','m4v','mp3','wav','m4a','flac','ogg','srt','vtt']}]});if(res.canceled)return [];const results:{file:string;type:string;name:string}[]=[];const used=new Set((await readdir(path.join(dir(),'media')).catch(()=>[])).map(s=>s.toLowerCase()));await mkdir(path.join(dir(),'media'),{recursive:true});for(const src of res.filePaths){const name=path.basename(src);const ext=path.extname(name).toLowerCase();let dest=name;let num=2;while(used.has(dest.toLowerCase())){dest=path.basename(name,ext)+`_${num++}`+ext;}used.add(dest.toLowerCase());const copied=path.join(dir(),'media',dest);if(path.resolve(src)!==path.resolve(copied))await copyFile(src,copied);results.push({file:`media/${dest}`,type:['.png','.jpg','.jpeg','.webp','.bmp','.gif'].includes(ext)?'image':['.mp4','.mov','.webm','.m4v'].includes(ext)?'video':['.srt','.vtt'].includes(ext)?'subtitle':'audio',name:dest});}return results;});
- ipcMain.handle('media:urls',(_e,files:string[])=>{const out:Record<string,string>={};for(const file of files){out[file]=mediaUrl(file);}return out;});
- ipcMain.handle('subtitle:saveSrt',async(_e,items:SubtitleItem[])=>{const r=await dialog.showSaveDialog(win!,{defaultPath:path.join(dir(),'captions.srt'),filters:[{name:'SubRip',extensions:['srt']}]});if(r.canceled||!r.filePath)return null;await writeFile(r.filePath,toSrt(items),'utf8');return r.filePath;});
- ipcMain.handle('subtitle:importSrt',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openFile'],filters:[{name:'SubRip',extensions:['srt']}]});if(r.canceled)return null;return readFile(r.filePaths[0],'utf8');});
- ipcMain.handle('project:openFolder',()=>shell.openPath(dir()));
- ipcMain.handle('project:showFile',(_e,file:string)=>{if(!file)return;shell.showItemInFolder(path.resolve(dir(),file));});
- ipcMain.handle('engine:configure',async(_e,settings:EngineConfig)=>{config=settings;await atomicWrite(configPath(),JSON.stringify(config,null,2));engine.setConfig(config);return engine.status();});
- ipcMain.handle('engine:config',()=>engine.status());
- ipcMain.handle('engine:pickRepo',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0];});
- ipcMain.handle('engine:pickPython',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openFile'],filters:[{name:'Python',extensions:['exe']},{name:'모든 파일',extensions:['*']}]});return r.canceled?null:r.filePaths[0];});
- ipcMain.handle('engine:action',async(_e,action:string,args:Record<string,unknown>={})=>{if(!['ping','devices','validate','record_start','record_stop','record_level','render','cancel'].includes(action))throw new Error('허용되지 않은 엔진 명령');return engine.request(action,{...args,base_dir:dir()},action==='render'?24*3600*1000:120000);});
- ipcMain.handle('app:info',()=>({version:app.getVersion(),projectDir:dir(),userData:app.getPath('userData')}));
+  ipcMain.handle('project:new',async (_e,title?:string)=>{const file=path.join(app.getPath('userData'),'projects',randomUUID(),'project.json');return save(createProject(title||'제목 없음'),file);});
+  ipcMain.handle('project:open',async(_e,fileArg?:string):Promise<ProjectState|null>=>{let file=fileArg;if(!file){const r=await dialog.showOpenDialog(win!,{title:'프로젝트 파일 열기',properties:['openFile'],filters:[{name:'편집 프로젝트 (JSON)',extensions:['json']}]});if(r.canceled)return null;file=r.filePaths[0];}return openAny(file!);});
+  ipcMain.handle('project:openFolder',async():Promise<ProjectState|null>=>{const r=await dialog.showOpenDialog(win!,{title:'고모 창작실 제작 패키지 폴더 선택',properties:['openDirectory']});if(r.canceled)return null;return openFolder(r.filePaths[0]);});
+  ipcMain.handle('project:openPath',async(_e,target:string)=>openAny(target));
+  ipcMain.handle('project:recent',async()=>(await readRecent()).filter(r=>existsSync(r.path)));
+  ipcMain.handle('project:save',async(_e,data:ComposerProject)=>save(data));
+  ipcMain.handle('project:saveAs',async(_e,data:ComposerProject)=>{ensureProject();const r=await dialog.showSaveDialog(win!,{defaultPath:path.join(app.getPath('documents'),path.basename(currentPath)),filters:[{name:'편집 프로젝트 (JSON)',extensions:['json']}]});if(r.canceled||!r.filePath)return null;const doc=remapMedia(data,dir(),path.dirname(r.filePath));return save(doc,r.filePath);});
+  ipcMain.handle('project:reveal',()=>shell.openPath(dir()));
+  ipcMain.handle('project:showFile',(_e,file:string)=>{if(!file)return;shell.showItemInFolder(path.resolve(dir(),file));});
+  ipcMain.handle('media:import',async(_e,kind:'visual'|'audio'|'any'='any',multi=true)=>{
+    ensureProject();
+    const ext=kind==='visual'?[...IMAGE,...VIDEO]:kind==='audio'?AUDIO:[...IMAGE,...VIDEO,...AUDIO];
+    const res=await dialog.showOpenDialog(win!,{properties:multi?['multiSelections','openFile']:['openFile'],filters:[{name:kind==='audio'?'오디오':kind==='visual'?'이미지·영상':'미디어',extensions:ext}]});
+    if(res.canceled)return [];
+    const results:{file:string;type:string;name:string;duration?:number|null}[]=[];
+    const mediaDir=path.join(dir(),'media');await mkdir(mediaDir,{recursive:true});
+    const used=new Set((await readdir(mediaDir)).map(s=>s.toLowerCase()));
+    for(const src of res.filePaths){
+      const name=path.basename(src);const e=path.extname(name);let dest=name;let num=2;
+      const inside=path.resolve(src).toLowerCase().startsWith(path.resolve(dir()).toLowerCase()+path.sep);
+      let rel:string;
+      if(inside)rel=path.relative(dir(),src).replace(/\\/g,'/'); // 이미 프로젝트 폴더 안 파일은 복사하지 않음
+      else{while(used.has(dest.toLowerCase()))dest=path.basename(name,e)+`_${num++}`+e;used.add(dest.toLowerCase());await copyFile(src,path.join(mediaDir,dest));rel=`media/${dest}`;}
+      const type=kindOf(src);let duration:number|null=null;
+      if((type==='video'||type==='audio')&&ffmpeg().ok)duration=(await probeMedia(ffmpeg().path,path.resolve(dir(),rel))).duration;
+      results.push({file:rel,type,name:path.basename(rel),duration});
+    }
+    return results;
+  });
+  ipcMain.handle('media:urls',(_e,files:string[])=>{const out:Record<string,string>={};for(const file of files){out[file]=mediaUrl(file);}return out;});
+  ipcMain.handle('media:probe',async(_e,file:string)=>{const st=ffmpeg();if(!st.ok)return {duration:null,hasAudio:false};return probeMedia(st.path,path.resolve(dir(),file));});
+  ipcMain.handle('take:save',async(_e,cue:number|null,data:ArrayBuffer)=>{ensureProject();const folder=path.join(dir(),'takes');const name=await uniqueName(folder,cue?`line_${String(cue).padStart(4,'0')}_v`:'free_v','wav');await writeFile(path.join(folder,name),Buffer.from(data));return `takes/${name}`;});
+  ipcMain.handle('take:import',async(_e,cue:number)=>{ensureProject();const r=await dialog.showOpenDialog(win!,{title:'녹음해 둔 음성 파일 선택',properties:['openFile'],filters:[{name:'오디오',extensions:AUDIO}]});if(r.canceled)return null;const src=r.filePaths[0];const folder=path.join(dir(),'takes');const name=await uniqueName(folder,`line_${String(cue).padStart(4,'0')}_file_v`,extOf(src)||'wav');await copyFile(src,path.join(folder,name));const rel=`takes/${name}`;const duration=ffmpeg().ok?(await probeMedia(ffmpeg().path,path.join(folder,name))).duration:null;return {file:rel,duration};});
+  ipcMain.handle('subtitle:saveSrt',async(_e,items:SubtitleItem[])=>{const r=await dialog.showSaveDialog(win!,{defaultPath:path.join(dir(),'captions.srt'),filters:[{name:'SubRip',extensions:['srt']}]});if(r.canceled||!r.filePath)return null;await writeFile(r.filePath,toSrt(items),'utf8');return r.filePath;});
+  ipcMain.handle('subtitle:importSrt',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openFile'],filters:[{name:'SubRip',extensions:['srt']}]});if(r.canceled)return null;return readFile(r.filePaths[0],'utf8');});
+  ipcMain.handle('ffmpeg:status',()=>{ffmpegStatus=resolveFfmpeg(settings.ffmpeg);return ffmpegStatus;});
+  ipcMain.handle('ffmpeg:configure',async(_e,custom:string)=>{settings={...settings,ffmpeg:custom||''};await atomicWrite(settingsPath(),JSON.stringify(settings,null,2));ffmpegStatus=resolveFfmpeg(settings.ffmpeg);return ffmpegStatus;});
+  ipcMain.handle('ffmpeg:pick',async()=>{const r=await dialog.showOpenDialog(win!,{title:'ffmpeg.exe 선택',properties:['openFile'],filters:[{name:'FFmpeg',extensions:process.platform==='win32'?['exe']:['*']}]});return r.canceled?null:r.filePaths[0];});
+  ipcMain.handle('render:start',async(_e,data:ComposerProject,draft:boolean)=>{
+    const file=ensureProject();if(renderAbort)throw new Error('이미 영상을 만들고 있어요.');
+    const st=ffmpeg();if(!st.ok)throw new Error(st.message);
+    const base=path.dirname(file);const doc=normalizeProject(data);
+    const outName=draft?'preview_gomo.mp4':(String(doc.output.file||'output.mp4').trim()||'output.mp4');
+    const output=path.resolve(base,outName);if(!output.startsWith(path.resolve(base)+path.sep))throw new Error('출력 파일은 프로젝트 폴더 안이어야 해요.');
+    renderAbort=new AbortController();const signal=renderAbort.signal;
+    send({phase:'progress',progress:0,message:'준비 중'});
+    void renderProject(doc,{ffmpeg:st.path,baseDir:base,output,draft,signal,onProgress:(progress,message)=>send({phase:'progress',progress,message})})
+      .then(r=>send({phase:'done',progress:1,message:`완료 · ${Math.round(r.duration*10)/10}초 · ${(r.bytes/1048576).toFixed(1)}MB`,output:r.output}))
+      .catch((e:Error)=>send(signal.aborted?{phase:'cancelled',progress:0,message:'만들기를 취소했어요.'}:{phase:'error',progress:0,message:e.message}))
+      .finally(()=>{renderAbort=null;});
+    return {output};
+  });
+  ipcMain.handle('render:cancel',()=>{renderAbort?.abort();return true;});
+  ipcMain.handle('render:open',(_e,file:string)=>shell.openPath(file));
+  ipcMain.handle('render:reveal',(_e,file:string)=>shell.showItemInFolder(file));
+  ipcMain.handle('render:url',(_e,file:string)=>{if(!existsSync(file))return '';const id=randomUUID();mediaMap.set(id,file);return `gomo-media://media/${id}`;});
+  // 기존 영상 합성기 Python 엔진 (선택 기능 — 고급 설정)
+  ipcMain.handle('engine:configure',async(_e,c:EngineConfig)=>{config=c;await atomicWrite(configPath(),JSON.stringify(config,null,2));engine.setConfig(config);return engine.status();});
+  ipcMain.handle('engine:config',()=>engine.status());
+  ipcMain.handle('engine:pickRepo',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0];});
+  ipcMain.handle('engine:pickPython',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openFile'],filters:[{name:'Python',extensions:['exe']},{name:'모든 파일',extensions:['*']}]});return r.canceled?null:r.filePaths[0];});
+  ipcMain.handle('engine:action',async(_e,action:string,args:Record<string,unknown>={})=>{if(!['ping','devices','validate','render','cancel'].includes(action))throw new Error('허용되지 않은 엔진 명령');return engine.request(action,{...args,base_dir:dir(),project_path:currentPath},action==='render'?24*3600*1000:120000);});
+  ipcMain.handle('app:info',()=>({version:app.getVersion(),projectDir:dir(),userData:app.getPath('userData')}));
 }
-function createWindow(){win=new BrowserWindow({width:1536,height:950,minWidth:1080,minHeight:680,backgroundColor:'#F8FAFC',title:'고모 편집실',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'../preload/index.js'),nodeIntegration:false,contextIsolation:true,sandbox:false}});win.on('closed',()=>win=null);if(!app.isPackaged&&process.env.ELECTRON_RENDERER_URL){void win.loadURL(process.env.ELECTRON_RENDERER_URL);win.webContents.openDevTools({mode:'detach'});}else void win.loadFile(path.join(__dirname,'../renderer/index.html'));}
+function createWindow(){win=new BrowserWindow({width:1536,height:950,minWidth:1180,minHeight:720,backgroundColor:'#F8FAFC',title:'고모 편집실',icon:path.join(__dirname,'../../resources/app.png'),autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'../preload/index.js'),nodeIntegration:false,contextIsolation:true,sandbox:false}});win.on('closed',()=>win=null);if(!app.isPackaged&&process.env.ELECTRON_RENDERER_URL){void win.loadURL(process.env.ELECTRON_RENDERER_URL);}else void win.loadFile(path.join(__dirname,'../renderer/index.html'));}
 app.whenReady().then(async()=>{
- try{config=JSON.parse(readFileSync(configPath(),'utf8')) as EngineConfig;}catch{config={repo:'',python:''};}engine.setConfig(config);
- protocol.handle('gomo-media',async request=>{const id=new URL(request.url).pathname.split('/').filter(Boolean)[0];const file=mediaMap.get(id);if(!file||!existsSync(file))return new Response('Missing', {status:404});return net.fetch(pathToFileURL(file).toString());});
- registerIpc();createWindow();app.on('activate',()=>{if(!BrowserWindow.getAllWindows().length)createWindow();});
+  try{config=JSON.parse(readFileSync(configPath(),'utf8')) as EngineConfig;}catch{config={repo:'',python:''};}engine.setConfig(config);
+  try{settings={ffmpeg:'',...JSON.parse(readFileSync(settingsPath(),'utf8'))};}catch{settings={ffmpeg:''};}
+  // 마이크 녹음 허용 (이 앱 화면에서만)
+  session.defaultSession.setPermissionRequestHandler((_wc,permission,cb)=>cb(permission==='media'));
+  session.defaultSession.setPermissionCheckHandler((_wc,permission)=>permission==='media');
+  protocol.handle('gomo-media',async request=>{const id=new URL(request.url).pathname.split('/').filter(Boolean)[0];const file=mediaMap.get(id);if(!file||!existsSync(file))return new Response('Missing',{status:404});return net.fetch(pathToFileURL(file).toString(),{headers:request.headers});});
+  registerIpc();createWindow();app.on('activate',()=>{if(!BrowserWindow.getAllWindows().length)createWindow();});
 });
-app.on('before-quit',()=>engine.close());app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
+app.on('before-quit',()=>{renderAbort?.abort();engine.close();});app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});

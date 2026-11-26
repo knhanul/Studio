@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+const p=__shared('project');
+const base=()=>{const x=p.createProject();x.clips=[{file:'a.png',type:'image',duration:4},{file:'b.png',type:'image',duration:4},{file:'c.mp4',type:'video',fit_duration:5}];
+  x.subtitle.items=[{index:1,start:.2,end:3.8,text:'하나'},{index:2,start:4.2,end:7.8,text:'둘'},{index:3,start:8.2,end:12.8,text:'셋'}];return x;};
+await test('take position follows cue start + offset - latency',()=>{const cues=[{index:3,start:10,end:12,text:''}];assert.equal(p.takePosition({file:'t.wav',subtitle:3,offset:-.5},cues,100),9.4);assert.equal(p.takePosition({file:'t.wav',subtitle:null,offset:2},cues),2);});
+await test('take length uses trim or file duration',()=>{assert.equal(p.takeLength({file:'a',duration:3}),3);assert.equal(p.takeLength({file:'a',duration:3,trim_start:.5,trim_end:2.5}),2);assert.equal(p.takeLength({file:'a'}),0);});
+await test('applyTrim makes voice start exactly at cue start',()=>{const t=p.applyTrim({file:'a',subtitle:1,duration:3},.4,2.6);assert.equal(t.offset,-.4);const span=p.takeSpan(t,[{index:1,start:5,end:6,text:''}]);assert.equal(span.start,5);assert.equal(Math.round(span.end*1000)/1000,7.2);});
+await test('one take per cue: re-record replaces, remove unlinks',()=>{let x=base();x=p.setTakeForCue(x,{file:'takes/line_0001_v1.wav',subtitle:1});x=p.setTakeForCue(x,{file:'takes/line_0001_v2.wav',subtitle:1});assert.equal(x.dubbing.takes.length,1);assert.equal(p.takeForCue(x,1).file,'takes/line_0001_v2.wav');x=p.removeTakeForCue(x,1);assert.equal(x.dubbing.takes.length,0);});
+await test('cuesByClip groups cues by scene midpoint',()=>{assert.deepEqual(p.cuesByClip(base()),[[1],[2],[3]]);});
+await test('fit timeline grows image scenes to recorded voice length',()=>{let x=base();x=p.setTakeForCue(x,{file:'a.wav',subtitle:1,duration:6});const y=p.fitTimelineToTakes(x);
+  assert.equal(y.clips[0].duration,Math.round((.3+6+.6)*100)/100);const c1=y.subtitle.items.find(c=>c.index===1);assert.equal(c1.start,.3);assert.equal(c1.end,6.3);
+  const c2=y.subtitle.items.find(c=>c.index===2);assert.ok(c2.start>=y.clips[0].duration,'second cue starts in second scene');assert.equal(y.clips[2].fit_duration,5,'video keeps its length');assert.equal(x.clips[0].duration,4,'input not mutated');});
+await test('fit timeline keeps cue lengths without takes and respects min image length',()=>{const x=base();x.subtitle.items[0]={index:1,start:.1,end:.4,text:'짧음'};const y=p.fitTimelineToTakes(x);assert.equal(y.clips[0].duration,1.5);});
+await test('fit timeline accounts for global subtitle offset',()=>{let x=base();x.subtitle.offset=1;x.subtitle.items=x.subtitle.items.map(c=>({...c,start:c.start-1,end:c.end-1}));x=p.setTakeForCue(x,{file:'a.wav',subtitle:1,duration:2});const y=p.fitTimelineToTakes(x);const c=p.projectCues(y)[0];assert.equal(c.start,.3);assert.equal(c.end,2.3);});
+await test('motion preview path matches render table',()=>{assert.deepEqual(p.motionState('zoom_in',.2,1),{z:1.2,fx:.5,fy:.5});assert.deepEqual(p.motionState('pan_left',.1,0),{z:1.1,fx:1,fy:.5});assert.equal(p.motionCss('none',.2,.5),'none');assert.match(p.motionCss('zoom_in',.2,1),/scale\(1\.2\)/);});
+await test('duck factor is a reduction',()=>{const k=p.duckFactor({duck_ratio:6});assert.ok(k>0&&k<1);});

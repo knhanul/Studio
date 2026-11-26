@@ -1,30 +1,35 @@
-# 고모 편집실 아키텍처 v0.1
+# 고모 편집실 아키텍처 v0.2
 
 ## 설계 의도
 
-- VS Code에서 React UI를 계속 개발한다.
-- `knhanul/dubbing` Python 처리 코드는 **수정하거나 TypeScript로 이식하지 않는다**.
-- 두 앱(GOMO Create, GOMO Compose)은 서로 다른 EXE로 유지한다.
-- 기존 Video Composer JSON v2를 데이터 계약으로 사용한다.
+- 고모 창작실과 한 세트: 같은 디자인 시스템(`styles/base.css`), 같은 셸(사이드바 · 문서 헤더 · 작업 공간 · 하단 바).
+- 더빙에 꼭 필요한 기능만 가볍게. 녹음과 영상 만들기는 **Python 없이** 앱 안에서 처리.
+- 데이터 계약은 dubbing의 Video Composer JSON v2. 창작실 전달 패키지는 불러올 때 v2로 변환.
 
 ## 계층
 
-1. **renderer**: React 화면 / 순수 UI 상태 / 히스토리 / 타임라인 / 자막.
-2. **preload**: 명시적으로 허용된 IPC 메서드만 노출.
-3. **main**: 파일 입출력, 미디어 토큰 URL, 로컬 프로젝트, 설정.
-4. **engine bridge**: JSONL over stdio, `composer.schema`, `render_project`, `Recorder` 호출.
-5. **원본 Python 소스**: 기존 FFmpeg/ASR/녹음/타임라인 계산, 변경 금지.
+1. **renderer** — React 화면, 편집 상태, 히스토리, 미리보기(CSS로 움직임·전환 흉내), 녹음(getUserMedia → PCM → WAV).
+2. **preload** — 허용된 IPC만 `window.compose`로 노출.
+3. **main** — 파일 입출력, 미디어 URL, 녹음 파일 저장, FFmpeg 실행, 설정.
+4. **shared** — 순수 함수: 타임라인·테이크 위치·창작실 변환·SRT/ASS·렌더 계획. 단위 테스트 대상.
+5. **(선택) engine bridge** — 예전 Python 엔진. 기본 흐름에서는 쓰지 않음.
 
-## 작업 중단과 복구
+## 렌더 파이프라인 (`shared/render.ts` → `main/ffmpeg.ts`)
 
-- 프로젝트 파일은 저장 시 임시 파일을 작성하고 원자적으로 교체한다.
-- UI에서는 Ctrl+S로 수동 저장하며, 자동저장은 향후 단계로 확장한다.
-- 렌더 작업 중 UI가 종료되면 Worker가 종료되므로 재렌더가 필요하다.
-- 녹음 중 강제 종료되는 경우 원본 WAV가 불완전할 수 있다. 차기 버전에서는 복구 메커니즘 구현.
+1. 장면별 중간 파일(.mkv, H.264 + PCM): 이미지는 `perspective`로 부드러운 움직임, 영상은 속도·자르기·맞춤.
+   다음 장면으로 넘어가는 전환 시간만큼 길게 만들어 둠.
+2. 이어 붙이기: 전환이 있으면 `xfade`/`acrossfade`, 없으면 concat.
+3. 자막: ASS 파일로 만들어 `ass` 필터로 새김(작업 폴더 기준 상대 경로, Windows 글꼴 폴더 지정).
+4. 소리: 테이크(자르기·크기·위치) amix → 배경음악(반복·페이드·크기) → sidechaincompress 자동 줄이기 → alimiter.
+5. 진행률은 `-progress pipe:1`, 취소는 AbortSignal.
 
-## 향후 리팩토링 원칙
+## 테이크 위치
 
-- Python을 수정해야 할 경우에도 기존 처리 함수를 감싼 최소 어댑터만 추가한다.
-- 렌더 설정·프로젝트 스키마의 형식은 `composer/schema.py` 및 `schema/project.schema.json`을 진실의 원천으로 사용한다.
-- 읽을 수 없는 구형 프로젝트는 원본 앱에서 먼저 마이그레이션한다.
-- React UI에서 직접 ffmpeg 프로세스를 실행하지 않는다.
+`위치 = 자막 시작 + offset − latency`. 자르기는 `offset = −trim_start`로 맞춰 목소리가 자막 시작에 정확히 들어감.
+"녹음 길이에 맞추기"는 녹음된 문장 길이로 자막을 다시 배치하고, 이미지 장면 길이만 늘이거나 줄임(영상 장면은 그대로).
+
+## 저장과 복구
+
+- 저장은 임시 파일 작성 후 교체. 변경 900ms 뒤 자동 저장.
+- 다시 녹음해도 예전 WAV는 지우지 않음(`line_0001_v2.wav` …).
+- 렌더는 임시 작업 폴더에서 하고, 끝나면 정리.
