@@ -39,6 +39,20 @@ npm run dev
 │ 환경 설정          ├ 상태 표시줄: 자동 저장 · 장면/자막 수 · FFmpeg 상태 · 버전 ─────────┤
 ```
 
+## v0.3.1 — 장면 전환 깜박임 없애기 (창작실 효과 규격 gomo.effects.v1)
+
+- 같은 장면(scene_id)·같은 그림의 연속 샷을 **한 구간**으로 묶어 렌더링 — 샷 사이에는 섞지 않고 카메라(배율·중심)가
+  앞 샷이 끝난 자리에서 이어 움직임(속도까지 이어지게 단조 3차 보간, 구간 처음·끝만 ease-in-out)
+- motion 10종(static · zoom_in/out · pan_left/right/up/down · focus_in/out · drift) + 예전 움직임 그대로
+- 구간 사이만 xfade로 섞음. 창작실 `fade`는 서서히 섞기(예전 편집실 프로젝트의 `fade`만 검은 화면 페이드),
+  `dissolve`는 점으로 반짝이는 xfade dissolve 대신 서서히 섞기, fadeblack·fadewhite는 지정한 곳에서만
+- 영상 장면: 기준 이미지 정지 샷 → 영상 샷 사이는 0.3~0.5초 서서히 섞기, 영상 앞 검은 프레임(최대 0.5초) 자동 잘라 냄
+- 모든 시각을 프레임 단위로: 구간 프레임 수 = round(길이×fps), xfade offset = 구간 시작 프레임 ÷ fps,
+  다음 구간과 섞이는 시간만큼 앞 구간을 늘려 그려 전체 길이·자막 시각은 그대로
+- 색감(tone 8종)은 구간마다 xfade 전에 적용, 분위기 효과는 vignette만 우선 지원(나머지는 렌더 로그·완료 메시지에 기록)
+- 편집 화면 미리보기도 같은 구간·카메라·전환 규칙(`shared/camera.ts`)을 씀, 다음 구간을 미리 올려 두어 영상 첫 프레임 깜박임 없음
+- `node scripts/boundary-check.mjs` — 테스트 프로젝트를 렌더링하고 클립 경계 ±0.5초 프레임의 밝기·차이·크기·pts를 검사
+
 ## v0.3 — 창작실의 다양한 미디어 그대로 쓰기
 
 창작실 제작 패키지는 장면마다 **이미지와 영상(이미지→동영상의 기준 이미지)**, 다시 만든 **버전(`S04_image_v2.png`)**,
@@ -112,6 +126,7 @@ NVENC 하드웨어 인코딩, 트랙 잠금/솔로, 타임라인 핸들 끌어�
 npm run typecheck   # 타입 검사
 npm test            # 단위 테스트 (Python 있으면 엔진 브리지 테스트도)
 npm run test:render # 실제 FFmpeg로 짧은 영상 만들어 보기
+node scripts/boundary-check.mjs --frames   # 클립 경계 깜박임 검사 (밝기·프레임 차이·pts)
 npm run build
 npm run dist:win    # 설치 파일 + Portable EXE (release/)
 ```

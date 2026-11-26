@@ -1,26 +1,62 @@
-import {useEffect,useRef,type CSSProperties} from 'react';
+import {useEffect,useMemo,useRef,useState,type CSSProperties} from 'react';
 import {ChevronFirst,ChevronLeft,ChevronRight,Film,Pause,Play} from 'lucide-react';
-import {clipSpeed,fmt,motionCss,transitionInto} from '../../shared/project';
+import {clipSpeed,fmt} from '../../shared/project';
+import {buildSegments,cameraAt,TONES,toneMatrix,type Segment} from '../../shared/camera';
 import type {Clip,ComposerProject,SubtitleItem} from '../../shared/types';
 import {useEditor} from '../editor';
 import {useElementSize} from '../hooks/useElementSize';
 
-function Layer({clip,url,poster,local,progress,opacity,playing,z}:{clip:Clip;url?:string;poster?:string;local:number;progress:number;opacity:number;playing:boolean;z:number}){
-  const ref=useRef<HTMLVideoElement>(null);
-  const target=(Number(clip.trim_start)||0)+local*clipSpeed(clip);
-  useEffect(()=>{const v=ref.current;if(!v)return;
-    if(Math.abs(v.currentTime-target)>(playing?.35:.04)&&Number.isFinite(target)){try{v.currentTime=Math.max(0,target);}catch{/* 아직 못 읽음 */}}
-    v.playbackRate=Math.min(4,Math.max(.25,clipSpeed(clip)));v.muted=!playing||Boolean(clip.mute);v.volume=Math.min(1,Math.max(0,clip.volume==null?1:Number(clip.volume)));
-    if(playing&&v.paused)void v.play().catch(()=>{});if(!playing&&!v.paused)v.pause();
-  });
-  const style:CSSProperties={opacity,zIndex:z};
-  if(!url&&poster)return <div className="monitor-layer" style={style}><img src={poster} alt="" draggable={false} style={{objectFit:(clip.fit||'cover')==='contain'?'contain':'cover'}}/><span className="monitor-badge">영상 파일을 찾을 수 없어 기준 이미지를 보여 줘요</span></div>;
-  if(!url)return <div className="monitor-layer monitor-missing" style={style}><Film size={26}/><span>{clip.file?'파일을 찾을 수 없어요':'미디어 없음'}</span></div>;
-  const fit=(clip.fit||'cover')==='contain'?'contain':'cover';
-  return <div className="monitor-layer" style={style}>{clip.type==='video'
-    ?<video ref={ref} src={url} poster={poster} preload="auto" playsInline style={{objectFit:fit}}/>
-    :<img src={url} alt="" draggable={false} style={{objectFit:fit,transform:motionCss(String(clip.motion||'none'),Number(clip.motion_strength??.15),progress),transformOrigin:'0 0'}}/>}</div>;
+/** 구간 하나 그리기 — 이미지는 내보내기와 같은 카메라 경로(cameraAt), 영상은 같은 속도·시작점 */
+/** 영상 앞 검은 프레임 길이 (내보내기와 같이 그만큼 건너뛴다) */
+const leads=new Map<string,number>();
+function useLead(file:string,isVideo:boolean){
+  const [v,setV]=useState(()=>leads.get(file)??0);
+  useEffect(()=>{if(!isVideo||leads.has(file))return;let dead=false;void window.compose.media.probe(file).then(i=>{leads.set(file,Number(i.lead)||0);if(!dead)setV(Number(i.lead)||0);}).catch(()=>{});return()=>{dead=true;};},[file,isVideo]);
+  return v;
 }
+function SegmentLayer({doc,seg,urls,local,style,playing,visible}:{doc:ComposerProject;seg:Segment;urls:Record<string,string>;local:number;style:CSSProperties;playing:boolean;visible:boolean}){
+  const clip:Clip=doc.clips[seg.clips[0]];const ref=useRef<HTMLVideoElement>(null);
+  const url=urls[seg.file];const poster=clip.poster?urls[clip.poster]:undefined;
+  const lead=useLead(seg.file,seg.type==='video');
+  const start=Number(clip.trim_start)>0?Number(clip.trim_start):Math.min(.5,lead);
+  const target=start+Math.max(0,local)*clipSpeed({...clip,trim_start:start});
+  useEffect(()=>{const v=ref.current;if(!v)return;
+    if(Math.abs(v.currentTime-target)>(playing&&visible?.35:.04)&&Number.isFinite(target)){try{v.currentTime=Math.max(0,target);}catch{/* 아직 못 읽음 */}}
+    v.playbackRate=Math.min(4,Math.max(.25,clipSpeed(clip)));v.muted=!playing||!visible||Boolean(clip.mute);v.volume=Math.min(1,Math.max(0,clip.volume==null?1:Number(clip.volume)));
+    const run=playing&&visible&&local>=0;if(run&&v.paused)void v.play().catch(()=>{});if(!run&&!v.paused)v.pause();
+  });
+  const fit=(clip.fit||'cover')==='contain'?'contain':'cover';
+  const tone=toneMatrix(seg.tone)?`url(#gomo-tone-${seg.tone})`:undefined;
+  const vignette=seg.overlay==='vignette'?<div className="monitor-vignette" style={{opacity:.35+.55*Math.max(0,Math.min(1,seg.overlayStrength))}}/>:null;
+  if(!url&&poster)return <div className="monitor-layer" style={style}><img src={poster} alt="" draggable={false} style={{objectFit:fit,filter:tone}}/>{vignette}<span className="monitor-badge">영상 파일을 찾을 수 없어 기준 이미지를 보여 줘요</span></div>;
+  if(!url)return <div className="monitor-layer monitor-missing" style={style}><Film size={26}/><span>{seg.file?'파일을 찾을 수 없어요':'미디어 없음'}</span></div>;
+  if(seg.type==='video')return <div className="monitor-layer" style={style}><video ref={ref} src={url} poster={poster} preload="auto" playsInline style={{objectFit:fit,filter:tone}}/>{vignette}</div>;
+  const c=cameraAt(seg.camera,Math.max(0,local));
+  const transform=c.z===1&&c.cx===.5&&c.cy===.5?'none':`scale(${c.z.toFixed(5)}) translate(${(-(c.cx-.5/c.z)*100).toFixed(4)}%, ${(-(c.cy-.5/c.z)*100).toFixed(4)}%)`;
+  return <div className="monitor-layer" style={style}><img src={url} alt="" draggable={false} style={{objectFit:fit,transform,transformOrigin:'0 0',filter:tone}}/>{vignette}</div>;
+}
+/** 전환 한 프레임: 앞 구간(prev)·들어오는 구간(cur)의 모양. 내보내기의 xfade 이름과 같은 뜻 (a: 0→1) */
+function blend(type:string,a:number):{prev:CSSProperties;cur:CSSProperties;veil?:CSSProperties}{
+  const pct=(v:number)=>`${(v*100).toFixed(3)}%`;
+  switch(type){
+    case 'fadeblack':return {prev:{opacity:Math.max(0,1-2*a)},cur:{opacity:Math.max(0,2*a-1)}};
+    case 'fadewhite':return {prev:{opacity:a<.5?1:0},cur:{opacity:a<.5?0:1},veil:{background:'#fff',opacity:1-Math.abs(2*a-1)}};
+    case 'wipeleft':return {prev:{},cur:{clipPath:`inset(0 0 0 ${pct(1-a)})`}};
+    case 'wiperight':return {prev:{},cur:{clipPath:`inset(0 ${pct(1-a)} 0 0)`}};
+    case 'wipeup':return {prev:{},cur:{clipPath:`inset(${pct(1-a)} 0 0 0)`}};
+    case 'wipedown':return {prev:{},cur:{clipPath:`inset(0 0 ${pct(1-a)} 0)`}};
+    case 'slideleft':return {prev:{transform:`translateX(${pct(-a)})`},cur:{transform:`translateX(${pct(1-a)})`}};
+    case 'slideright':return {prev:{transform:`translateX(${pct(a)})`},cur:{transform:`translateX(${pct(a-1)})`}};
+    case 'slideup':return {prev:{transform:`translateY(${pct(-a)})`},cur:{transform:`translateY(${pct(1-a)})`}};
+    case 'slidedown':return {prev:{transform:`translateY(${pct(a)})`},cur:{transform:`translateY(${pct(a-1)})`}};
+    case 'circleopen':return {prev:{},cur:{clipPath:`circle(${pct(a*.75)} at 50% 50%)`}};
+    case 'circleclose':return {prev:{clipPath:`circle(${pct((1-a)*.75)} at 50% 50%)`,zIndex:3},cur:{}};
+    default:return {prev:{},cur:{opacity:a}}; // fade · zoomin · hblur 등: 서서히 섞기
+  }
+}
+/** 색감 필터 (내보내기 colorchannelmixer 와 같은 행렬) */
+function ToneDefs(){return <svg className="monitor-defs" aria-hidden="true" width="0" height="0"><defs>{Object.entries(TONES).map(([id,m])=><filter key={id} id={`gomo-tone-${id}`} colorInterpolationFilters="sRGB">
+  <feColorMatrix type="matrix" values={`${m[0]} ${m[1]} ${m[2]} 0 0 ${m[3]} ${m[4]} ${m[5]} 0 0 ${m[6]} ${m[7]} ${m[8]} 0 0 0 0 0 1 0`}/></filter>)}</defs></svg>;}
 /** 자막 미리보기: 렌더(ASS)와 같은 크기 비율·위치 */
 export function SubtitleOverlay({doc,cue,height}:{doc:ComposerProject;cue?:SubtitleItem;height:number}){
   if(!cue||doc.subtitle.burn_in===false)return null;
@@ -36,23 +72,27 @@ export function Monitor({showTransport=true}:{showTransport?:boolean}){
   const [boxRef,box]=useElementSize<HTMLDivElement>();
   const W=doc.output.width||1920,H=doc.output.height||1080;
   const scale=Math.min(box.width/W,box.height/H)||0;const fw=Math.floor(W*scale),fh=Math.floor(H*scale);
+  const segs=useMemo(()=>buildSegments(doc),[doc]);const fps=Number(doc.output.fps)||30;
   const i=tracks.findIndex(t=>playhead>=t.start&&playhead<t.end);const cur=i>=0?i:tracks.length-1;
-  const layers:{k:number;opacity:number;z:number}[]=[];
-  if(cur>=0){
-    const t=tracks[cur];const tr=transitionInto(doc,cur);const into=playhead-t.start;
-    if(tr.duration>0&&into<tr.duration&&cur>0){
-      const a=into/tr.duration;
-      if(tr.type==='fade'){if(a<.5)layers.push({k:cur-1,opacity:1-a*2,z:1});else layers.push({k:cur,opacity:(a-.5)*2,z:2});}
-      else{layers.push({k:cur-1,opacity:1,z:1},{k:cur,opacity:a,z:2});}
-    }else layers.push({k:cur,opacity:1,z:2});
+  const frame=Math.round(playhead*fps);
+  let si=segs.findIndex((s,k)=>frame>=s.startFrame&&(k===segs.length-1||frame<segs[k+1].startFrame));if(si<0)si=segs.length-1;
+  type L={seg:Segment;style:CSSProperties;visible:boolean};const layers:L[]=[];let veil:CSSProperties|undefined;
+  if(si>=0){
+    const s=segs[si];const tr=s.transition;const into=playhead-s.startFrame/fps;
+    if(si>0&&tr.frames>0&&into<tr.duration){const bl=blend(tr.type,Math.max(0,into/tr.duration));veil=bl.veil;
+      layers.push({seg:segs[si-1],style:{zIndex:1,...bl.prev},visible:true},{seg:s,style:{zIndex:2,...bl.cur},visible:true});}
+    else layers.push({seg:s,style:{zIndex:2},visible:true});
+    // 다음 구간을 미리 올려 두어(보이지 않게) 영상 첫 프레임이 늦게 나와 검게 깜박이지 않게 한다
+    const nx=segs[si+1];if(nx&&nx.startFrame/fps-playhead<1.5)layers.push({seg:nx,style:{zIndex:0,opacity:0},visible:false});
   }
   const cue=cues.find(c=>playhead>=c.start&&playhead<c.end);
   const jump=(d:number)=>{const idx=Math.max(0,Math.min(tracks.length-1,cur+d));if(tracks[idx])seek(tracks[idx].start);};
   return <div className="monitor">
     <div className="monitor-stage" ref={boxRef}>
-      <div className="monitor-frame" style={{width:fw,height:fh}}>
+      <div className="monitor-frame" style={{width:fw,height:fh}}><ToneDefs/>
         {!tracks.length&&<div className="monitor-layer monitor-missing"><Film size={28}/><span>장면을 추가하면 여기에서 미리 볼 수 있어요</span></div>}
-        {layers.map(l=>{const t=tracks[l.k];const handle=transitionInto(doc,l.k+1).duration;return <Layer key={l.k} clip={t.clip} url={urls[t.clip.file]} poster={t.clip.poster?urls[t.clip.poster]:undefined} local={playhead-t.start} progress={(playhead-t.start)/(t.duration+handle)} opacity={l.opacity} z={l.z} playing={playing}/>;})}
+        {layers.map(l=><SegmentLayer key={`seg-${l.seg.index}-${l.seg.file}`} doc={doc} seg={l.seg} urls={urls} local={playhead-l.seg.startFrame/fps} style={l.style} playing={playing} visible={l.visible}/>)}
+        {veil&&<div className="monitor-layer" style={{zIndex:4,...veil}}/>}
         <SubtitleOverlay doc={doc} cue={cue} height={fh}/>
       </div>
     </div>

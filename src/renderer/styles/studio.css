@@ -289,3 +289,5 @@ body{min-width:1180px}
 .tl-bgm{cursor:pointer}
 .tl-music{background:color-mix(in srgb,var(--color-warning-soft) 60%,var(--color-info-soft));}
 .tl-sfx{background:var(--color-success-soft);color:var(--color-success);border-color:color-mix(in srgb,var(--color-success) 30%,transparent)}
+.monitor-defs{position:absolute;width:0;height:0;overflow:hidden}
+.monitor-vignette{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,transparent 45%,rgba(0,0,0,.85) 100%)}

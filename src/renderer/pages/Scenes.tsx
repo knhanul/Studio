@@ -1,6 +1,7 @@
 import {useState,type DragEvent} from 'react';
 import {ArrowDown,ArrowUp,Film,Image as ImageIcon,ImagePlus,Library,Plus,RefreshCw,Replace,Trash2} from 'lucide-react';
 import {clipDuration,clipSpeed,MOTIONS,round,TRANSITIONS,videoSourceSpan} from '../../shared/project';
+import {isEffectsProject,resolveTransition} from '../../shared/camera';
 import {importedItems,insertPosterBefore,mergeLibrary,sceneAlternatives,swapClipMedia} from '../../shared/media';
 import type {Clip} from '../../shared/types';
 import {useMediaActions} from '../components/MediaLibrary';
@@ -38,6 +39,8 @@ export function ScenesMain(){
     <Timeline/>
   </div>;
 }
+/** 앞 클립과 같은 장면·같은 그림의 다음 샷인가 (내보내기에서 한 구간으로 묶임) */
+function isSameShot(doc:{clips:Clip[]},i:number){const a=doc.clips[i-1],b=doc.clips[i];return !!a&&!!b&&a.type==='image'&&b.type==='image'&&a.scene_id!=null&&a.scene_id===b.scene_id&&a.file===b.file;}
 export function ScenesPanel(){
   const {doc,selectedClip,setSelectedClip,commit,toast,urls,openLibrary}=useEditor();
   const act=useMediaActions();
@@ -49,6 +52,10 @@ export function ScenesPanel(){
   const replace=async()=>{const [it]=await window.compose.media.import('visual',false);if(!it)return;if(it.type!=='image'&&it.type!=='video')return;
     commit(p=>{p.media_library=mergeLibrary(p.media_library,importedItems([it]));p.clips[i]=swapClipMedia(p.clips[i],{file:it.file,kind:it.type as Clip['type'],duration:it.duration},dur);return p;});toast('장면 미디어를 바꿨어요.','success');};
   const alts=sceneAlternatives(doc,clip);
+  const sameShot=isSameShot(doc,i);
+  const resolved=resolveTransition(tr?.type,isEffectsProject(doc));
+  const trValue=resolved==='none'?'none':resolved==='fade'?'crossfade':resolved==='fadeblack'?'fadeblack':String(tr?.type);
+  const trOptions=[...TRANSITIONS.map(t=>({id:t.id,label:t.label})),...(TRANSITIONS.some(t=>t.id===trValue)?[]:[{id:trValue,label:`창작실 전환 (${trValue})`}])];
   return <SidePanel title={`장면 ${i+1} 설정`} head={<div className="panel-head-actions">
       <IconButton label="앞으로 옮기기" disabled={i===0} onClick={()=>{commit(p=>{const [c]=p.clips.splice(i,1);p.clips.splice(i-1,0,c);return p;});setSelectedClip(i-1);}}><ArrowUp size={15}/></IconButton>
       <IconButton label="뒤로 옮기기" disabled={i>=doc.clips.length-1} onClick={()=>{commit(p=>{const [c]=p.clips.splice(i,1);p.clips.splice(i+1,0,c);return p;});setSelectedClip(i+1);}}><ArrowDown size={15}/></IconButton>
@@ -90,9 +97,10 @@ export function ScenesPanel(){
       <Button kind="ghost" size="sm" onClick={()=>commit(p=>{p.clips.forEach(c=>{if(c.type==='image'){c.motion=clip.motion;c.motion_strength=clip.motion_strength;}});return p;})}>모든 이미지 장면에 같은 움직임 적용</Button>
     </Section>}
     <Section title={i===0?'전환 (첫 장면은 없음)':'앞 장면에서 넘어올 때'}>
-      {i>0&&<><Segmented label="전환" value={tr?.type&&tr.type!=='none'?(TRANSITIONS.some(t=>t.id===tr.type)?tr.type:'crossfade'):'none'} options={TRANSITIONS.map(t=>({id:t.id,label:t.label}))} onChange={v=>patch({transition:{type:v,duration:v==='none'?0:Math.max(.2,tr?.duration||.5)}})}/>
-        {tr&&tr.type!=='none'&&<Slider label="전환 시간" value={tr.duration||.5} min={.2} max={2} step={.1} format={v=>`${v.toFixed(1)}초`} onChange={v=>patch({transition:{type:tr.type,duration:round(v,2)}})}/>}
-        <Button kind="ghost" size="sm" onClick={()=>commit(p=>{p.clips.forEach((c,k)=>{if(k>0)c.transition=clip.transition?{...clip.transition}:null;});return p;})}>모든 장면에 같은 전환 적용</Button></>}
+      {i>0&&sameShot&&<p className="muted-text small">같은 장면({String(clip.scene_id)})의 다음 샷이에요. 샷 사이는 섞지 않고 카메라가 이어서 움직여요.</p>}
+      {i>0&&!sameShot&&<><Segmented label="전환" value={trValue} options={trOptions} onChange={v=>patch({transition:{type:v,duration:v==='none'?0:Math.max(.2,tr?.duration||.5)}})}/>
+        {tr&&trValue!=='none'&&<Slider label="전환 시간" value={tr.duration||.5} min={.2} max={2} step={.1} format={v=>`${v.toFixed(1)}초`} onChange={v=>patch({transition:{...tr,duration:round(v,2)}})}/>}
+        <Button kind="ghost" size="sm" onClick={()=>commit(p=>{p.clips.forEach((c,k)=>{if(k>0&&!isSameShot(p,k))c.transition=clip.transition?{...clip.transition}:null;});return p;})}>모든 장면에 같은 전환 적용</Button></>}
     </Section>
   </SidePanel>;
 }

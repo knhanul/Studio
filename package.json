@@ -1,7 +1,7 @@
 {
   "name": "gomo-compose-studio",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "고모 미디어공방 — 고모 편집실 (창작실 작품 더빙·자막·배경음악·MP4 내보내기)",
   "main": "./out/main/index.js",
   "license": "MIT",

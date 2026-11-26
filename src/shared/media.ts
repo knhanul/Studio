@@ -115,7 +115,7 @@ export function fromCreatorProject(cp:CreatorProject):{project:ComposerProject;s
     if(!file){skipped.push(s.id);continue;}
     const kind=kindOfFile(file) as 'image'|'video';
     const dur=Math.max(.5,Number(c.durationSec)||Number(s.durationSec)||DEFAULT_IMAGE_SECONDS);
-    const t=c.transition||cp.assembly?.transitionDefault;const tr=t==='cut'?'none':t==='fade'?'fade':'crossfade';
+    const t=c.transition||cp.assembly?.transitionDefault;const tr=t==='cut'?'none':t==='fade_black'?'fadeblack':'crossfade'; // 창작실 fade = 서서히 섞기 (검은 화면 아님)
     const clip:Clip={file,type:kind,label:s.title||'',scene_id:s.id,transition:{type:tr,duration:tr==='none'?0:Math.min(.5,dur/4)},motion:kind==='image'?'zoom_in':'none',motion_strength:.08};
     if(kind==='video'&&poster)clip.poster=poster;
     if(kind==='image')clip.duration=dur;else{clip.fit_duration=dur;clip.mute=true;}
