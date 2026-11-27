@@ -8,7 +8,8 @@ let ctxSingleton:AudioContext|null=null;
 export function audioContext(){if(!ctxSingleton)ctxSingleton=new AudioContext();return ctxSingleton;}
 export function loadBuffer(url:string):Promise<AudioBuffer|null>{
   if(!url)return Promise.resolve(null);
-  if(!buffers.has(url))buffers.set(url,fetch(url).then(r=>r.arrayBuffer()).then(b=>audioContext().decodeAudioData(b)).catch(()=>null));
+  // 실패한 결과는 기억하지 않는다 (파일을 막 저장했거나 잠깐 못 읽었을 때 다음에 다시 시도)
+  if(!buffers.has(url))buffers.set(url,fetch(url).then(r=>{if(!r.ok)throw new Error(String(r.status));return r.arrayBuffer();}).then(b=>audioContext().decodeAudioData(b)).catch(()=>{buffers.delete(url);return null;}));
   return buffers.get(url)!;
 }
 /** 미리보기 재생 중 더빙 녹음과 배경음악을 타임라인에 맞춰 들려준다 (덕킹·페이드 근사) */
