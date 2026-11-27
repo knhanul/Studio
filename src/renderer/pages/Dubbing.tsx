@@ -444,7 +444,21 @@ function DubbingPanel({busy,curIndex,onRecord,onFocus,checked,setChecked,onRecor
   const patchTake=(x:Partial<DubbingTake>)=>{if(curIndex==null||!take)return;commit(p=>setTakeForCue(p,{...take,...x}));};
   const autoTrim=async()=>{if(!take)return;const b=await loadBuffer(urls[take.file]);if(!b)return toast('녹음 파일을 읽지 못했어요.','error');const r=detectVoiceBounds(b.getChannelData(0),b.sampleRate);if(!r)return toast('목소리 구간을 찾지 못했어요.','error');commit(p=>setTakeForCue(p,applyTrim({...take,duration:take.duration??round(b.duration)},r.start,r.end)));toast('앞뒤 무음을 잘라냈어요.','success');};
   const importFile=async()=>{if(curIndex==null)return;const r=await window.compose.take.import(curIndex);if(!r)return;commit(p=>setTakeForCue(p,{file:r.file,subtitle:curIndex,offset:0,volume:1,duration:r.duration?round(r.duration):null}));toast('음성 파일을 이 문장에 연결했어요.','success');};
-  return <SidePanel title="문장별 녹음" className="wide-panel" head={<Button size="sm" kind="ghost" title="녹음된 길이에 맞춰 이미지 장면 길이와 자막 시간을 다시 계산해요" onClick={()=>{commit(p=>fitTimelineToTakes(p));toast('녹음 길이에 맞춰 장면과 자막 시간을 맞췄어요.','success');}}><Wand2 size={14}/> 길이 맞추기</Button>}>
+  /** 다른 작업(예전 편집 프로젝트)의 녹음을 같은 문장에 맞춰 가져오기 — 창작실 작품을 다시 받아 열었을 때 */
+  const importOld=async()=>{
+    try{
+      const skip=items.filter(c=>takeForCue(doc,c.index)).map(c=>c.index);
+      const r=await window.compose.take.importFrom(doc.subtitle.items||[],skip);if(!r)return;
+      if(!r.takes.length){toast(`「${r.title}」에서 지금 자막과 같은 문장의 녹음을 찾지 못했어요.${skip.length?` (이미 녹음된 문장 ${skip.length}개는 건너뜀)`:''}`,'error');return;}
+      commit(p=>{let n=p;for(const t of r.takes)n=setTakeForCue(n,t);return n;});
+      const left=r.total-r.takes.length;
+      toast(`「${r.title}」에서 녹음 ${r.takes.length}개를 가져왔어요.${skip.length?` 이미 녹음된 문장 ${skip.length}개는 그대로 뒀어요.`:''}${left>0?` 문장이 달라졌거나 파일이 없는 녹음 ${left}개는 빼고 가져왔어요.`:''}`,'success');
+    }catch(e){toast((e instanceof Error?e.message:String(e)).replace(/^Error invoking remote method '[^']+': (Error: )?/,''),'error');}
+  };
+  return <SidePanel title="문장별 녹음" className="wide-panel" head={<div className="panel-head-actions">
+      <Button size="sm" kind="ghost" disabled={busy} title="창작실 작품을 다시 받아 열었을 때, 예전 작업(composer_project.json)의 녹음을 같은 문장에 맞춰 복사해 와요" onClick={()=>void importOld()}><FileAudio size={14}/> 녹음 가져오기</Button>
+      <Button size="sm" kind="ghost" disabled={busy} title="녹음된 길이에 맞춰 이미지 장면 길이와 자막 시간을 다시 계산해요" onClick={()=>{commit(p=>fitTimelineToTakes(p));toast('녹음 길이에 맞춰 장면과 자막 시간을 맞췄어요.','success');}}><Wand2 size={14}/> 길이 맞추기</Button></div>}>
+    {!busy&&items.length>0&&!items.some(c=>takeForCue(doc,c.index))&&<div className="import-hint"><span>예전에 녹음해 둔 작업이 있나요?</span><Button size="sm" kind="outline" onClick={()=>void importOld()}><FileAudio size={14}/> 예전 작업에서 녹음 가져오기</Button></div>}
     {!busy&&<div className="cue-select-bar">
       <span className="cue-select-count"><ListChecks size={14}/> {checked.length?`${checked.length}개 선택`:'체크해서 여러 개 고르기'}</span>
       <Button size="sm" kind="ghost" disabled={busy} onClick={()=>setChecked(items.map(c=>c.index))}>전체</Button>

@@ -248,3 +248,24 @@ export function selectCues(order:number[],current:number[],idx:number,mode:'togg
   const next=on?[...current,...range.filter(x=>!current.includes(x))]:current.filter(x=>!range.includes(x));
   return order.filter(x=>next.includes(x));
 }
+
+// ── 다른 작업에서 녹음 가져오기: 자막 문장이 같은 것끼리 짝짓기 ─────────
+/** 비교용 문장: 띄어쓰기·문장부호·기호를 빼고 소문자로 */
+export const normText=(t:string)=>String(t||'').replace(/[\s\p{P}\p{S}]/gu,'').toLowerCase();
+export interface TakeMatch{from:number;to:number;take:DubbingTake}
+/** 예전 작업의 녹음을 지금 자막에 짝짓는다. 1) 문장이 같으면  2) 한쪽이 다른 쪽을 포함하면(4글자 이상).
+ *  같은 문장이 여러 번 나오면 순서대로. skip 에 든 문장(이미 녹음 있음 등)은 건너뛴다 */
+export function matchTakesByText(old:Pick<ComposerProject,'subtitle'|'dubbing'>,now:SubtitleItem[],skip:Set<number>=new Set()):{matches:TakeMatch[];unmatched:{index:number;text:string}[]}{
+  const target=sortCues(now).filter(c=>!skip.has(c.index)).map(c=>({c,k:normText(c.text)}));
+  const used=new Set<number>();const matches:TakeMatch[]=[];const unmatched:{index:number;text:string}[]=[];let lastPos=-1;
+  const pick=(ok:(k:string)=>boolean)=>{let best=-1;for(let i=0;i<target.length;i++){if(used.has(i)||!ok(target[i].k))continue;if(i>lastPos){best=i;break;}if(best<0)best=i;}return best;};
+  for(const c of sortCues(old.subtitle.items||[])){
+    const take=takeForCue(old as ComposerProject,c.index);if(!take)continue;
+    const k=normText(c.text);if(!k){unmatched.push({index:c.index,text:c.text});continue;}
+    let i=pick(x=>x===k);
+    if(i<0&&k.length>=4)i=pick(x=>x.length>=4&&(x.includes(k)||k.includes(x)));
+    if(i<0){unmatched.push({index:c.index,text:c.text});continue;}
+    used.add(i);lastPos=i;matches.push({from:c.index,to:target[i].c.index,take});
+  }
+  return {matches,unmatched};
+}

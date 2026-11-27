@@ -31,3 +31,11 @@ await test('multi-select sentences: ctrl toggles one, shift selects a range from
   s=p.selectCues(order,s,3,'toggle',1);assert.deepEqual(s,[1,2,4,5],'ctrl on a checked one removes it');
   s=p.selectCues(order,s,4,'range',6);assert.deepEqual(s,[1,2],'shift on a checked one removes the range 4..6');
   assert.deepEqual(p.selectCues(order,[],4,'range',null),[4],'no anchor: just that one');});
+await test('import recordings from an older project: match sentences by text, keep order, skip ones already recorded',()=>{
+  const oldDoc=p.createProject();oldDoc.subtitle.items=[{index:1,start:0,end:2,text:'여호와는 나의 목자시니,'},{index:2,start:2,end:4,text:'내게 부족함이 없으리로다'},{index:3,start:4,end:6,text:'아멘'},{index:4,start:6,end:8,text:'아멘'},{index:5,start:8,end:9,text:'지워진 문장'}];
+  oldDoc.dubbing.takes=[1,2,3,4,5].map(i=>({file:`takes/line_000${i}_v1.wav`,subtitle:i,offset:-.2,trim_start:.3,volume:.9}));
+  const now=[{index:1,start:0,end:3,text:'여호와는 나의 목자시니'},{index:2,start:3,end:5,text:'아멘'},{index:3,start:5,end:8,text:'그가 나를 푸른 풀밭에 누이시며 내게 부족함이 없으리로다'},{index:4,start:8,end:9,text:'아멘'}];
+  const r=p.matchTakesByText(oldDoc,now);
+  assert.deepEqual(r.matches.map(m=>[m.from,m.to]),[[1,1],[2,3],[3,4],[4,2]],'exact (punctuation ignored), contained, repeated lines follow order first');
+  assert.deepEqual(r.unmatched.map(u=>u.index),[5]);assert.equal(r.matches[0].take.trim_start,.3);
+  const r2=p.matchTakesByText(oldDoc,now,new Set([1]));assert.ok(!r2.matches.some(m=>m.to===1),'already recorded sentence skipped');});

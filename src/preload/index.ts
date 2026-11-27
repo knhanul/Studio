@@ -1,5 +1,5 @@
 import {contextBridge,ipcRenderer,webUtils} from 'electron';
-import type {ComposerProject,MediaItem,SubtitleItem,EngineStatus,FfmpegStatus,ProjectState,RecentProject,RenderEvent} from '../shared/types';
+import type {ComposerProject,DubbingTake,MediaItem,SubtitleItem,EngineStatus,FfmpegStatus,ProjectState,RecentProject,RenderEvent} from '../shared/types';
 export const api={
   project:{
     create:(title?:string):Promise<ProjectState>=>ipcRenderer.invoke('project:new',title),
@@ -23,7 +23,9 @@ export const api={
   },
   take:{
     save:(cue:number|null,data:ArrayBuffer):Promise<string>=>ipcRenderer.invoke('take:save',cue,data),
-    import:(cue:number):Promise<{file:string;duration:number|null}|null>=>ipcRenderer.invoke('take:import',cue)
+    import:(cue:number):Promise<{file:string;duration:number|null}|null>=>ipcRenderer.invoke('take:import',cue),
+    /** 예전 작업의 녹음을 같은 문장에 맞춰 복사해 오기 (skip: 이미 녹음된 문장) */
+    importFrom:(cues:SubtitleItem[],skip:number[]):Promise<{title:string;takes:DubbingTake[];missing:number;unmatched:string[];total:number}|null>=>ipcRenderer.invoke('take:importFrom',cues,skip)
   },
   subtitle:{saveSrt:(items:SubtitleItem[]):Promise<string|null>=>ipcRenderer.invoke('subtitle:saveSrt',items),importSrt:():Promise<string|null>=>ipcRenderer.invoke('subtitle:importSrt')},
   ffmpeg:{status:():Promise<FfmpegStatus>=>ipcRenderer.invoke('ffmpeg:status'),configure:(path:string):Promise<FfmpegStatus>=>ipcRenderer.invoke('ffmpeg:configure',path),pick:():Promise<string|null>=>ipcRenderer.invoke('ffmpeg:pick')},
