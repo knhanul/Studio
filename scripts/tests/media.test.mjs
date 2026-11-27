@@ -83,3 +83,13 @@ await test('clip from library item: video gets poster of its scene',()=>{
   const {project:x}=m.fromCreatorProject(creator);const item=x.media_library.find(i=>i.file==='assets/video/S02_video.mp4');
   const c=m.clipFromItem(x,item,7.5);assert.equal(c.type,'video');assert.equal(c.poster,'assets/image/S02_image.png');assert.equal(c.source_duration,7.5);assert.equal(c.label,'별');
   assert.equal(m.clipFromItem(x,x.media_library.find(i=>i.kind==='audio')),null);});
+await test('package bgm: chosen in creator, else latest generated BGM, else any audio',()=>{
+  const lib=m.libraryFromCreator(creator);
+  assert.equal(m.packageBgm(lib,creator),'assets/audio/BGM_01.mp3','편집안에서 고른 음악');
+  const none={...creator,assembly:{...creator.assembly,bgmAssetId:null}};
+  assert.equal(m.packageBgm(lib,none),'assets/audio/BGM_02.mp3','고르지 않았으면 가장 나중에 만든 BGM');
+  assert.equal(m.fromCreatorProject(none).project.bgm.file,'assets/audio/BGM_02.mp3');
+  const odd={...none,assets:[...creator.assets.filter(a=>a.kind!=='audio'),A('g1','audio','assets/audio/gemini_music.mp3')]};
+  assert.equal(m.packageBgm(m.libraryFromCreator(odd),odd),'assets/audio/gemini_music.mp3','예전 이름의 음악');
+  assert.equal(m.packageBgm(m.libraryFromFiles(['assets/audio/BGM_01.mp3','assets/audio/BGM_03.mp3','media/x.wav'])),'assets/audio/BGM_03.mp3','project.json 없이 폴더만');
+  assert.equal(m.packageBgm([],null),null);});

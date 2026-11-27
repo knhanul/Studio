@@ -7,7 +7,7 @@ import path from 'node:path';
 import {EngineController,EngineConfig} from './engine';
 import {probeLead,probeMedia,renderProject,resolveFfmpeg} from './ffmpeg';
 import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,normalizeProject,toSrt} from '../shared/project';
-import {attachLibrary,fromCreatorProject,isCreatorProject,libraryFromCreator,libraryFromFiles,librarySummary,type CreatorProject} from '../shared/media';
+import {attachLibrary,fromCreatorProject,packageBgm,isCreatorProject,libraryFromCreator,libraryFromFiles,librarySummary,type CreatorProject} from '../shared/media';
 import type {ComposerProject,FfmpegStatus,MediaItem,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
 
 protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:true}}]);
@@ -81,9 +81,17 @@ async function openJson(file:string):Promise<ProjectState>{
   if(isCreatorHandoff(raw)||isCreatorProject(raw))return openFolder(path.dirname(file));
   let doc=normalizeProject(raw);if(doc.version!==2)throw new Error('프로젝트 v1은 기존 영상 합성기에서 v2로 마이그레이션한 다음 여세요.');
   const base=path.dirname(file);const loadedSrt=await fillSubtitles(doc,base);await fillVideoDurations(doc,base);
+  // 편집실에서 처음 여는 창작실 패키지인가 (편집실이 저장하면 media_library 가 생긴다)
+  const firstOpen=!Array.isArray((raw as {media_library?:unknown}).media_library);
   doc=await withLibrary(doc,base);
+  const notes:string[]=[];if(loadedSrt)notes.push('자막 파일(SRT)을 함께 불러왔어요.');
+  if(firstOpen&&!doc.bgm.file){
+    const creator=await readCreator(base);const music=packageBgm(doc.media_library||[],creator);
+    if(music&&existsSync(path.resolve(base,music))){doc={...doc,bgm:{...doc.bgm,file:music}};notes.push(`창작실에서 고른 배경음악이 없어, 만들어 둔 음악 「${path.basename(music)}」을(를) 배경음악으로 넣었어요. 배경음악 단계에서 바꿀 수 있어요.`);}
+  }
   currentPath=file;await remember(file,doc.title);
-  return {path:file,data:doc,updatedAt:new Date().toISOString(),notice:loadedSrt?'자막 파일(SRT)을 함께 불러왔어요.':undefined};
+  if(firstOpen&&doc.bgm.file&&!raw.bgm?.file)await save(doc,file);
+  return {path:file,data:doc,updatedAt:new Date().toISOString(),notice:notes.join(' ')||undefined};
 }
 /** 고모 창작실 제작 패키지 폴더 열기 */
 async function openFolder(folder:string):Promise<ProjectState>{
