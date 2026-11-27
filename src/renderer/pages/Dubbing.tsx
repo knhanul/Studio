@@ -4,7 +4,7 @@ import {DEFAULT_PAUSE,detectVoiceBounds,encodeWav,meterFraction,pauseStart,pause
 import {applyTrim,dubWindows,fitTimelineToTakes,pictureTake,removeTakeForCue,round,setTakeForCue,sortCues,takeForCue,takeLength,timeline,type DubWindow} from '../../shared/project';
 import type {DubbingTake,StepId} from '../../shared/types';
 import {SidePanel,StepLayout} from '../components/Shell';
-import {Timeline} from '../components/Timeline';
+import {Timeline,type TimelineLive} from '../components/Timeline';
 import {Button,Empty,Field,IconButton,Section,Segmented,Slider,Toggle} from '../components/UI';
 import {useEditor} from '../editor';
 import {loadBuffer,playMusicLayers,playTake} from '../hooks/usePreviewAudio';
@@ -27,6 +27,16 @@ function DubMonitor({clock,idle}:{clock:{from:number;startedAt:number}|null;idle
   const [t,setT]=useState(idle);
   useEffect(()=>{if(!clock){setT(idle);return;}let raf=0;const tick=()=>{setT(picNow(clock));raf=requestAnimationFrame(tick);};raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);},[clock,idle]);
   return <Monitor time={t} run={!!clock} silent showTransport={false}/>;
+}
+/** 다음 문장까지 남은 시간 (자기 시계로만 다시 그림) */
+function NextIn({clock,windows}:{clock:{from:number;startedAt:number};windows:DubWindow[]}){
+  const [t,setT]=useState(()=>picNow(clock));
+  useEffect(()=>{let raf=0;const tick=()=>{const v=Math.floor(picNow(clock)*10)/10;setT(x=>x===v?x:v);raf=requestAnimationFrame(tick);};raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);},[clock]);
+  const k=windows.findIndex(w=>t<w.end);if(k<0)return null;
+  const w=windows[k];
+  if(t<w.start)return <span className="tag tag-accent next-in">문장 시작까지 {(w.start-t).toFixed(1)}초</span>;
+  const nx=windows[k+1];
+  return <span className={`tag next-in ${w.end-t<1.5?'tag-warning':''}`}>{nx?`다음 문장까지 ${(w.end-t).toFixed(1)}초`:`끝까지 ${(w.end-t).toFixed(1)}초`}</span>;
 }
 /** 연속 녹음 진행 상태 */
 interface Cont{queue:number[];pos:number}
@@ -56,7 +66,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
   useEffect(()=>{setChecked(c=>c.filter(i=>items.some(x=>x.index===i)));},[items]);
   const [cont,setCont]=useState<Cont|null>(null);
   const contRef=useRef<(Cont&{marks:number[];pause:PauseState})|null>(null);
-  const picRef=useRef<Pic|null>(null);const [clock,setClock]=useState<{from:number;startedAt:number}|null>(null);const stopMusic=useRef<(()=>void)|null>(null);
+  const picRef=useRef<Pic|null>(null);const [clock,setClock]=useState<{from:number;startedAt:number}|null>(null);const [live,setLive]=useState<TimelineLive|null>(null);const stopMusic=useRef<(()=>void)|null>(null);
   const curIndex=selectedCue!=null&&items.some(c=>c.index===selectedCue)?selectedCue:(items.find(c=>!takeForCue(doc,c.index))||items[0])?.index??null;
   const pos=items.findIndex(c=>c.index===curIndex);const cur=items[pos];
   const next=cont?items.find(c=>c.index===cont.queue[cont.pos+1]):items[pos+1];
@@ -137,7 +147,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
   //    문장은 자막 시간 기준으로 넘어가고, 끝나면 문장마다 자막 구간에서 잘라 말한 위치 그대로 저장한다 ──
   const finishPicture=useCallback(async(mode:'save'|'discard')=>{
     const p=picRef.current;if(!p)return;picRef.current=null;
-    const tEnd=picNow(p);setClock(null);stopMusic.current?.();stopMusic.current=null;
+    const tEnd=picNow(p);setClock(null);setLive(null);seek(Math.min(tEnd,p.windows[p.windows.length-1].end));stopMusic.current?.();stopMusic.current=null;
     if(p.recT0==null){setCont(null);setPhase('idle');return;}
     const {samples,sampleRate}=rec.stop();setCont(null);
     if(mode==='discard'){setPhase('idle');toast('이번 녹음은 저장하지 않았어요.');return;}
@@ -163,7 +173,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
       toast(takes.length?`문장 ${takes.length}개를 영상에 맞춰 저장했어요.${silent?` 목소리가 거의 없는 ${silent}개는 건너뛰었어요.`:''}`:'저장할 목소리가 없었어요. 마이크 입력을 확인해 주세요.',takes.length?'success':'error');
     }catch(e){setPhase('idle');toast(e instanceof Error?e.message:String(e),'error');}
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[rec,commit,items,cues,focus,toast]);
+  },[rec,commit,items,cues,focus,toast,seek]);
   const startPicture=useCallback(async(queue:number[],single:boolean)=>{
     const q=items.filter(x=>queue.includes(x.index)).map(x=>x.index);if(!q.length)return;
     setPlaying(false);abort.current=false;
@@ -172,7 +182,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
     const T0=windows[0].start;const from=Math.max(0,T0-(optsRef.current.countdown?3:1));
     const startedAt=performance.now();
     picRef.current={queue:q,windows,from,startedAt,T0,recT0:null,pos:0,single,lastCount:-1};
-    setSelectedCue(q[0]);setCont(single?null:{queue:q,pos:0});setClock({from,startedAt});setPhase('countdown');setCount(0);
+    setSelectedCue(q[0]);setCont(single?null:{queue:q,pos:0});setClock({from,startedAt});setLive({clock:{from,startedAt},recStart:null,windows});setPhase('countdown');setCount(0);
     if(optsRef.current.listenBgm){const c={from,startedAt};stopMusic.current=playMusicLayers(doc,urls,()=>picNow(c));}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[items,cues,rec,setPlaying,setSelectedCue,doc,urls]);
@@ -182,7 +192,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
     const tick=()=>{const p=picRef.current;if(!p)return;const t=picNow(p);
       if(p.recT0==null){const remain=p.T0-t;
         if(remain>0){const n=Math.ceil(remain);if(optsRef.current.countdown&&n!==p.lastCount&&n<=3){p.lastCount=n;setCount(n);rec.beep(n===1);}}
-        else{rec.start();p.recT0=t;setPhase('recording');}}
+        else{rec.start();p.recT0=t;setPhase('recording');setLive(l=>l?{...l,recStart:t}:l);}}
       else{
         let k=p.windows.findIndex(w=>t<w.end);if(k<0){void finishPicture('save');return;}
         if(k!==p.pos){p.pos=k;if(!p.single)setCont({queue:p.queue,pos:k});setSelectedCue(p.windows[k].index);}
@@ -234,7 +244,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
     </div>}
     <div className={`prompter phase-${phase} ${opts.picture?'compact':''}`}>
       {!opts.picture&&sc&&urls[sc.clip.file]&&sc.clip.type==='image'&&<img className="prompter-scene" src={urls[sc.clip.file]} alt=""/>}
-      <div className="prompter-head"><span className="tag tag-accent">문장 {pos+1} / {items.length}</span>{cont&&<span className="tag tag-warning"><Repeat size={11}/> 연속 녹음 {cont.pos+1} / {cont.queue.length}</span>}{sc&&<span>장면 {sc.index+1}</span>}
+      <div className="prompter-head"><span className="tag tag-accent">문장 {pos+1} / {items.length}</span>{cont&&<span className="tag tag-warning"><Repeat size={11}/> 연속 녹음 {cont.pos+1} / {cont.queue.length}</span>}{live&&<NextIn clock={live.clock} windows={live.windows}/>}{sc&&<span>장면 {sc.index+1}</span>}
         {phase==='recording'&&<span className="rec-badge"><i/>녹음 중 {elapsed.toFixed(1)}초</span>}
         {phase==='saving'&&<span className="tag">저장 중…</span>}
         {phase==='idle'&&cur&&takeForCue(doc,cur.index)&&<span className="tag tag-success">녹음됨 {takeLength(takeForCue(doc,cur.index)!).toFixed(1)}초</span>}</div>
@@ -271,7 +281,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
       {!opts.picture&&opts.pauseNext&&<span className="pause-pick"><small>쉬는 시간</small><Segmented label="쉬는 시간" value={opts.pauseSec} options={PAUSES} onChange={v=>setOpt('pauseSec',v)}/></span>}
       <span className="key-hint">{opts.picture?'단축키 R 녹음 시작·끝내고 저장 · Esc 취소':`단축키 R 녹음·정지 · N 다음 문장 · Esc 취소${cont?' · 연속 녹음 중 Space/Enter 다음 문장':''}`}</span>
     </div>
-    <Timeline/>
+    <Timeline live={live}/>
   </div>;
   return <StepLayout header={header} actionBar={actionBar} panel={items.length?<DubbingPanel busy={busy} curIndex={curIndex} onRecord={idx=>void begin(idx,opts.countdown)} onFocus={focus} checked={checked} setChecked={setChecked} onRecordMany={q=>void startCont(q)}/>:undefined}>{main}</StepLayout>;
 }

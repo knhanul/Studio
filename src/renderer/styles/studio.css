@@ -321,3 +321,6 @@ body{min-width:1180px}
 .prompter.compact .prompter-next{padding-top:6px}
 .prompter.compact .prompter-next p{font-size:13px}
 .pic-hint{font-size:11px;color:var(--color-text-muted)}
+/* 녹음 중 타임라인: 문장별 녹음 구간 · 녹음된 부분 */
+.tl-window{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--color-primary) 7%,transparent);border-left:1px dashed color-mix(in srgb,var(--color-primary) 45%,transparent);border-right:1px dashed color-mix(in srgb,var(--color-primary) 45%,transparent);pointer-events:none;z-index:1}
+.tl-recorded{position:absolute;top:0;height:4px;background:var(--color-danger);opacity:.75;pointer-events:none;z-index:2;border-radius:0 2px 2px 0}

@@ -1,4 +1,4 @@
-import {useRef,useState,type MouseEvent} from 'react';
+import {useEffect,useRef,useState,type MouseEvent} from 'react';
 import {Captions,Film,Image as ImageIcon,Mic2,Music2,ZoomIn,ZoomOut} from 'lucide-react';
 import {fmt,takeSpan} from '../../shared/project';
 import {fileName,useEditor} from '../editor';
@@ -6,7 +6,12 @@ import {musicLayers} from '../../shared/media';
 import {useElementSize} from '../hooks/useElementSize';
 
 /** 간단한 타임라인: 장면 / 더빙 / 자막 / 배경음악 4줄. 누르면 그 시점으로 이동 */
-export function Timeline(){
+/** 녹음 중 진행: 화면 시계(from 초에서 startedAt 부터 흐름) · 녹음 구간 · 문장 구간들 */
+export interface TimelineLive{clock:{from:number;startedAt:number};recStart:number|null;windows:{index:number;start:number;end:number}[]}
+/** 간단한 타임라인: 장면 / 더빙 / 자막 / 배경음악 줄. 누르면 그 시점으로 이동.
+ *  live 를 주면 재생 위치 선이 그 시계를 따라 움직이고(앱 전체를 다시 그리지 않고 선만 옮김), 녹음된 부분을 칠해 보여 준다 */
+const liveNow=(l:TimelineLive)=>l.clock.from+(performance.now()-l.clock.startedAt)/1000;
+export function Timeline({live}:{live?:TimelineLive|null}={}){
   const {doc,tracks,total,cues,playhead,seek,selectedClip,setSelectedClip,selectedCue,setSelectedCue,urls,selectedAudio,setSelectedAudio}=useEditor();
   const layers=musicLayers(doc,total);
   const effects=layers.filter(l=>l.kind==='effect');
@@ -17,6 +22,15 @@ export function Timeline(){
   const pps=Math.max(4,((size.width-LABEL-16)/span)*zoom);
   const width=span*pps;
   const x=(t:number)=>t*pps;
+  const headRef=useRef<HTMLDivElement>(null);const recRef=useRef<HTMLDivElement>(null);
+  // 녹음 중: 재생 위치 선과 녹음된 부분만 직접 옮긴다 (60fps 로 타임라인 전체를 다시 그리지 않게). 화면 밖으로 나가면 따라 스크롤
+  useEffect(()=>{if(!live)return;let raf=0;
+    const tick=()=>{const t=live.clock.from+(performance.now()-live.clock.startedAt)/1000;const px=t*pps;
+      if(headRef.current)headRef.current.style.left=`${px}px`;
+      if(recRef.current){const rs=live.recStart;recRef.current.style.width=rs==null||t<rs?'0px':`${(t-rs)*pps}px`;}
+      const sc=scroller.current;if(sc){const view=sc.clientWidth;if(px<sc.scrollLeft+20||px>sc.scrollLeft+view*.8)sc.scrollLeft=Math.max(0,px-view*.3);}
+      raf=requestAnimationFrame(tick);};
+    raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);},[live,pps]);
   const at=(e:MouseEvent<HTMLDivElement>)=>{const r=e.currentTarget.getBoundingClientRect();return Math.max(0,Math.min(total,(e.clientX-r.left)/pps));};
   const latency=Number(doc.dubbing.latency_ms)||0;
   const ticks:number[]=[];const step=pps>60?1:pps>25?2:pps>10?5:pps>4?10:30;for(let t=0;t<=span;t+=step)ticks.push(t);
@@ -38,7 +52,9 @@ export function Timeline(){
           <div className="tl-row">{cues.map(c=><button type="button" key={c.index} className={`tl-item tl-cue ${selectedCue===c.index?'selected':''}`} style={{left:x(c.start),width:Math.max(3,x(c.end-c.start)-1)}} title={c.text} onClick={()=>{setSelectedCue(c.index);seek(c.start);}}><span>{c.text}</span></button>)}</div>
           <div className="tl-row">{layers.filter(l=>l.kind!=='effect').map(l=><button type="button" key={l.key} className={`tl-item tl-bgm ${l.kind==='music'?'tl-music':''} ${selectedAudio===l.key?'selected':''}`} style={{left:x(l.start),width:Math.max(3,x(l.end-l.start)-1)}} title={`${l.kind==='bgm'?'배경음악':'바뀌는 음악'} · ${fileName(l.file)} · ${l.start.toFixed(1)}~${l.end.toFixed(1)}초`} onClick={()=>{setSelectedAudio(l.key);seek(l.start);}}><span>{l.label}</span></button>)}</div>
           {effects.length>0&&<div className="tl-row">{effects.map(l=><button type="button" key={l.key} className={`tl-item tl-sfx ${selectedAudio===l.key?'selected':''}`} style={{left:x(l.start),width:Math.max(3,x(l.end-l.start)-1)}} title={`효과음 · ${fileName(l.file)} · ${l.start.toFixed(1)}초`} onClick={()=>{setSelectedAudio(l.key);seek(l.start);}}><span>{l.label}</span></button>)}</div>}
-          <div className="tl-playhead" style={{left:x(playhead)}}/>
+          {live&&live.windows.map(w=><div key={w.index} className="tl-window" style={{left:x(w.start),width:Math.max(2,x(w.end-w.start))}} title={`문장 ${w.index} 녹음 구간`}/>)}
+          {live&&<div className="tl-recorded" ref={recRef} style={{left:x(live.recStart??0),width:live.recStart==null?0:Math.max(0,x(liveNow(live)-live.recStart))}}/>}
+          <div className="tl-playhead" ref={headRef} style={{left:x(live?liveNow(live):playhead)}}/>
         </div>
       </div>
     </div>
