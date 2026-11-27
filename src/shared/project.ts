@@ -237,3 +237,14 @@ export function pictureTake(file:string,cue:SubtitleItem,fileStart:number,durati
   if(voice){t.trim_start=round(Math.max(0,voice.start));t.trim_end=round(Math.min(duration,Math.max(voice.start+.05,voice.end)));}
   return t;
 }
+
+// ── 여러 문장 고르기 (문장 목록 체크 · 타임라인 Ctrl/Shift 클릭 공용) ─────────
+/** order: 문장 번호를 시간 순서대로. toggle = 하나 켜고 끄기, range = 앞에 누른 문장(anchor)부터 여기까지 한꺼번에
+ *  (누른 문장이 꺼져 있었으면 그 범위를 켜고, 켜져 있었으면 끈다). anchor 가 없으면 range 도 하나만 켜고 끈다 */
+export function selectCues(order:number[],current:number[],idx:number,mode:'toggle'|'range',anchor:number|null):number[]{
+  const on=!current.includes(idx);
+  const a=anchor==null?-1:order.indexOf(anchor),b=order.indexOf(idx);
+  const range=mode==='range'&&a>=0&&b>=0?order.slice(Math.min(a,b),Math.max(a,b)+1):[idx];
+  const next=on?[...current,...range.filter(x=>!current.includes(x))]:current.filter(x=>!range.includes(x));
+  return order.filter(x=>next.includes(x));
+}

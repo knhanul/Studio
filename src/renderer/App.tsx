@@ -1,7 +1,7 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import {Captions,Check,ChevronDown,Clapperboard,Film,FolderInput,Home as HomeIcon,Info,Library,Mic2,Music2,Plus,Settings2,Sparkles,X} from 'lucide-react';
 import {BRAND} from '../shared/brand';
-import {projectCues,timeline,totalDuration} from '../shared/project';
+import {projectCues,selectCues,sortCues,timeline,totalDuration} from '../shared/project';
 import {STEP_HINTS,STEP_TITLES,STEPS,stepDone,stepGuide} from '../shared/steps';
 import type {ComposerProject,FfmpegStatus,ProjectState,StepId,View} from '../shared/types';
 import {ActionBar,DocHeader,SidePanel,StepLayout,type SaveState} from './components/Shell';
@@ -40,6 +40,7 @@ export default function App(){
   const [selectedClip,setSelectedClip]=useState<number|null>(null);
   const [selectedCue,setSelectedCue]=useState<number|null>(null);
   const [selectedAudio,setSelectedAudio]=useState<string|null>(null);
+  const [checkedCues,setCheckedCues]=useState<number[]>([]);const cueAnchor=useRef<number|null>(null);
   const [library,setLibrary]=useState<LibraryMode|null>(null);
   const [toastMsg,setToastMsg]=useState<{text:string;type:'info'|'error'|'success'}|null>(null);
   const [ffmpeg,setFfmpeg]=useState<FfmpegStatus|null>(null);
@@ -62,7 +63,7 @@ export default function App(){
   const undo=useCallback(()=>{setHistory(prev=>{if(!prev||!prev.past.length)return prev;const past=[...prev.past];const item=past.pop()!;return {present:item,past,future:[prev.present,...prev.future]};});scheduleSave();},[scheduleSave]);
   const redo=useCallback(()=>{setHistory(prev=>{if(!prev||!prev.future.length)return prev;const [item,...future]=prev.future;return {present:item,past:[...prev.past,prev.present],future};});scheduleSave();},[scheduleSave]);
 
-  const load=useCallback((s:ProjectState)=>{setOpened(s);setHistory({present:clone(s.data),past:[],future:[]});dirtyRef.current=false;setSaveState('saved');setSelectedClip(s.data.clips.length?0:null);setSelectedCue(null);setSelectedAudio(null);setLibrary(null);setPlayhead(0);playheadRef.current=0;setPlayingState(false);setRender(IDLE_RENDER);setView('scenes');toast(s.notice||`프로젝트를 열었어요: ${s.data.title}`,'success');},[toast]);
+  const load=useCallback((s:ProjectState)=>{setOpened(s);setHistory({present:clone(s.data),past:[],future:[]});dirtyRef.current=false;setSaveState('saved');setSelectedClip(s.data.clips.length?0:null);setSelectedCue(null);setSelectedAudio(null);setLibrary(null);setCheckedCues([]);cueAnchor.current=null;setPlayhead(0);playheadRef.current=0;setPlayingState(false);setRender(IDLE_RENDER);setView('scenes');toast(s.notice||`프로젝트를 열었어요: ${s.data.title}`,'success');},[toast]);
   const guard=async<T,>(op:()=>Promise<T>)=>{try{if(dirtyRef.current)await saveNow();return await op();}catch(e){toast(e instanceof Error?e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/,''):String(e),'error');return undefined;}};
   const openFolder=async()=>{const s=await guard(()=>window.compose.project.openFolder());if(s)load(s);};
   const openFile=async()=>{const s=await guard(()=>window.compose.project.open());if(s)load(s);};
@@ -98,8 +99,12 @@ export default function App(){
   useEffect(()=>{const fn=(e:BeforeUnloadEvent)=>{if(dirtyRef.current){void saveNow();}void e;};window.addEventListener('beforeunload',fn);return()=>window.removeEventListener('beforeunload',fn);},[saveNow]);
 
   const go=(v:View)=>{if(v!=='home'&&v!=='settings'&&!doc){toast('먼저 창작실 작품이나 프로젝트를 열어 주세요.');return;}setPlayingState(false);setView(v);};
+  const cueOrder=useMemo(()=>doc?sortCues(doc.subtitle.items||[]).map(c=>c.index):[],[doc]);
+  useEffect(()=>{setCheckedCues(c=>{const n=c.filter(i=>cueOrder.includes(i));return n.length===c.length?c:n;});},[cueOrder]);
+  const pickCue=useCallback((idx:number,mode:'toggle'|'range'|'anchor')=>{
+    if(mode!=='anchor')setCheckedCues(c=>selectCues(cueOrder,c,idx,mode,cueAnchor.current));cueAnchor.current=idx;},[cueOrder]);
   const openLibrary=useCallback((mode:LibraryMode={kind:'browse'})=>{setPlayingState(false);setLibrary(mode);},[]);
-  const editor:EditorState|null=doc?{doc,commit,tracks,total,cues,urls,playhead,seek,playing,setPlaying,selectedClip,setSelectedClip,selectedCue,setSelectedCue,toast,openLibrary,selectedAudio,setSelectedAudio}:null;
+  const editor:EditorState|null=doc?{doc,commit,tracks,total,cues,urls,playhead,seek,playing,setPlaying,selectedClip,setSelectedClip,selectedCue,setSelectedCue,toast,openLibrary,selectedAudio,setSelectedAudio,checkedCues,setCheckedCues,pickCue}:null;
   const projectTitle=doc?.title||'';
   const header=(step:StepId,actions?:ReactNode)=>{const Icon=ICONS[step];return <DocHeader icon={<Icon size={17}/>} title={STEP_TITLES[step]} projectTitle={projectTitle}
     chips={<span className="chip">{doc!.output.width}×{doc!.output.height}</span>} saveState={saveState} actions={actions}

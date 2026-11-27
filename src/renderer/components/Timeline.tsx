@@ -11,8 +11,14 @@ export interface TimelineLive{clock:{from:number;startedAt:number};recStart:numb
 /** 간단한 타임라인: 장면 / 더빙 / 자막 / 배경음악 줄. 누르면 그 시점으로 이동.
  *  live 를 주면 재생 위치 선이 그 시계를 따라 움직이고(앱 전체를 다시 그리지 않고 선만 옮김), 녹음된 부분을 칠해 보여 준다 */
 const liveNow=(l:TimelineLive)=>l.clock.from+(performance.now()-l.clock.startedAt)/1000;
-export function Timeline({live}:{live?:TimelineLive|null}={}){
-  const {doc,tracks,total,cues,playhead,seek,selectedClip,setSelectedClip,selectedCue,setSelectedCue,urls,selectedAudio,setSelectedAudio}=useEditor();
+/** multiSelect: 자막·녹음 칸을 Ctrl(하나씩)·Shift(범위)+클릭해 여러 문장 고르기 (더빙 단계) */
+export function Timeline({live,multiSelect=false}:{live?:TimelineLive|null;multiSelect?:boolean}={}){
+  const {doc,tracks,total,cues,playhead,seek,selectedClip,setSelectedClip,selectedCue,setSelectedCue,urls,selectedAudio,setSelectedAudio,checkedCues,pickCue}=useEditor();
+  const checkedSet=multiSelect||checkedCues.length?new Set(checkedCues):new Set<number>();
+  /** 자막 칸 누르기: Ctrl/⌘ = 하나 켜고 끄기, Shift = 범위, 그냥 = 그 문장으로 이동 */
+  const clickCue=(e:MouseEvent,idx:number,at:number)=>{
+    if(multiSelect&&(e.ctrlKey||e.metaKey||e.shiftKey)){e.preventDefault();pickCue(idx,e.shiftKey?'range':'toggle');return;}
+    if(multiSelect)pickCue(idx,'anchor');setSelectedCue(idx);seek(at);};
   const layers=musicLayers(doc,total);
   const effects=layers.filter(l=>l.kind==='effect');
   const [zoom,setZoom]=useState(1);
@@ -35,7 +41,7 @@ export function Timeline({live}:{live?:TimelineLive|null}={}){
   const latency=Number(doc.dubbing.latency_ms)||0;
   const ticks:number[]=[];const step=pps>60?1:pps>25?2:pps>10?5:pps>4?10:30;for(let t=0;t<=span;t+=step)ticks.push(t);
   return <div className="timeline" ref={wrapRef}>
-    <div className="timeline-tools"><span className="timeline-title">타임라인</span><span className="timeline-hint">빈 곳을 누르면 그 시점으로 이동해요</span>
+    <div className="timeline-tools"><span className="timeline-title">타임라인</span><span className="timeline-hint">{multiSelect?<>자막을 <kbd>Ctrl</kbd>·<kbd>Shift</kbd>+클릭하면 여러 문장을 골라요{checkedCues.length?<> · <b>{checkedCues.length}개 선택</b></>:null}</>:'빈 곳을 누르면 그 시점으로 이동해요'}</span>
       <button type="button" className="icon-btn" title="좁게 보기" aria-label="좁게 보기" disabled={zoom<=1} onClick={()=>setZoom(z=>Math.max(1,z/1.5))}><ZoomOut size={15}/></button>
       <button type="button" className="icon-btn" title="넓게 보기" aria-label="넓게 보기" disabled={zoom>=12} onClick={()=>setZoom(z=>Math.min(12,z*1.5))}><ZoomIn size={15}/></button></div>
     <div className="timeline-body">
@@ -48,8 +54,8 @@ export function Timeline({live}:{live?:TimelineLive|null}={}){
           <div className="tl-ruler">{ticks.map(t=><span key={t} style={{left:x(t)}}>{fmt(t).replace(/\.0$/,'')}</span>)}</div>
           <div className="tl-row">{tracks.map(t=><button type="button" key={t.index} className={`tl-item tl-clip ${selectedClip===t.index?'selected':''}`} style={{left:x(t.start),width:Math.max(2,x(t.duration)-2)}} title={`${t.index+1}. ${t.clip.label||fileName(t.clip.file)} · ${t.duration.toFixed(1)}초`} onClick={()=>{setSelectedClip(t.index);seek(t.start);}}>
             {t.clip.type==='image'&&urls[t.clip.file]?<img src={urls[t.clip.file]} alt=""/>:t.clip.type==='video'&&t.clip.poster&&urls[t.clip.poster]?<img src={urls[t.clip.poster]} alt=""/>:t.clip.type==='image'?<ImageIcon size={12}/>:<Film size={12}/>}<span>{t.index+1}. {t.clip.label||fileName(t.clip.file)}</span></button>)}</div>
-          <div className="tl-row">{doc.dubbing.takes.map((tk,j)=>{const s=takeSpan(tk,cues,latency);const len=Math.max(.2,s.end-s.start);return <button type="button" key={j} className={`tl-item tl-take ${tk.subtitle!=null&&selectedCue===tk.subtitle?'selected':''}`} style={{left:x(Math.max(0,s.start)),width:Math.max(3,x(len)-1)}} title={`녹음 · ${len.toFixed(1)}초`} onClick={()=>{if(tk.subtitle!=null)setSelectedCue(tk.subtitle);seek(Math.max(0,s.start));}}><span>{tk.subtitle!=null?`#${tk.subtitle}`:'녹음'}</span></button>;})}</div>
-          <div className="tl-row">{cues.map(c=><button type="button" key={c.index} className={`tl-item tl-cue ${selectedCue===c.index?'selected':''}`} style={{left:x(c.start),width:Math.max(3,x(c.end-c.start)-1)}} title={c.text} onClick={()=>{setSelectedCue(c.index);seek(c.start);}}><span>{c.text}</span></button>)}</div>
+          <div className="tl-row">{doc.dubbing.takes.map((tk,j)=>{const s=takeSpan(tk,cues,latency);const len=Math.max(.2,s.end-s.start);return <button type="button" key={j} className={`tl-item tl-take ${tk.subtitle!=null&&selectedCue===tk.subtitle?'selected':''} ${tk.subtitle!=null&&checkedSet.has(tk.subtitle)?'checked':''}`} style={{left:x(Math.max(0,s.start)),width:Math.max(3,x(len)-1)}} title={`녹음 · ${len.toFixed(1)}초`} onClick={e=>{if(tk.subtitle!=null)clickCue(e,tk.subtitle,Math.max(0,s.start));else seek(Math.max(0,s.start));}}><span>{tk.subtitle!=null?`#${tk.subtitle}`:'녹음'}</span></button>;})}</div>
+          <div className="tl-row">{cues.map(c=><button type="button" key={c.index} className={`tl-item tl-cue ${selectedCue===c.index?'selected':''} ${checkedSet.has(c.index)?'checked':''}`} style={{left:x(c.start),width:Math.max(3,x(c.end-c.start)-1)}} title={multiSelect?`${c.text}\nCtrl·Shift+클릭: 여러 문장 고르기`:c.text} aria-pressed={multiSelect?checkedSet.has(c.index):undefined} onClick={e=>clickCue(e,c.index,c.start)}>{checkedSet.has(c.index)&&<i className="tl-check" aria-hidden="true">✓</i>}<span>{c.text}</span></button>)}</div>
           <div className="tl-row">{layers.filter(l=>l.kind!=='effect').map(l=><button type="button" key={l.key} className={`tl-item tl-bgm ${l.kind==='music'?'tl-music':''} ${selectedAudio===l.key?'selected':''}`} style={{left:x(l.start),width:Math.max(3,x(l.end-l.start)-1)}} title={`${l.kind==='bgm'?'배경음악':'바뀌는 음악'} · ${fileName(l.file)} · ${l.start.toFixed(1)}~${l.end.toFixed(1)}초`} onClick={()=>{setSelectedAudio(l.key);seek(l.start);}}><span>{l.label}</span></button>)}</div>
           {effects.length>0&&<div className="tl-row">{effects.map(l=><button type="button" key={l.key} className={`tl-item tl-sfx ${selectedAudio===l.key?'selected':''}`} style={{left:x(l.start),width:Math.max(3,x(l.end-l.start)-1)}} title={`효과음 · ${fileName(l.file)} · ${l.start.toFixed(1)}초`} onClick={()=>{setSelectedAudio(l.key);seek(l.start);}}><span>{l.label}</span></button>)}</div>}
           {live&&live.windows.map(w=><div key={w.index} className="tl-window" style={{left:x(w.start),width:Math.max(2,x(w.end-w.start))}} title={`문장 ${w.index} 녹음 구간`}/>)}

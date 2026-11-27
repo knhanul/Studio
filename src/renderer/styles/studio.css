@@ -393,3 +393,13 @@ body{min-width:1180px}
 .cue-select-bar{flex-wrap:nowrap}
 .cue-select-count{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cue-select-bar .btn{flex:0 0 auto;padding-left:7px;padding-right:7px}
+/* 여러 문장 고르기: 직접 그린 체크 상자 (기본 체크박스는 클릭 처리와 부딪혀 체크 표시가 안 보였음) */
+.cue-list li button.cue-check,.cue-list li.selected button.cue-check,.cue-list li.checked button.cue-check{flex:0 0 18px;width:18px;height:18px;margin:8px 4px 0 3px;padding:0;border:1.5px solid var(--color-border-strong);border-radius:4px;background:var(--color-surface);color:transparent;display:grid;place-items:center;cursor:pointer}
+.cue-list li button.cue-check:hover:not(:disabled){border-color:var(--color-primary);background:var(--color-surface)}
+.cue-list li button.cue-check.on,.cue-list li.selected button.cue-check.on,.cue-list li button.cue-check.on:hover{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+.cue-list li button.cue-check:disabled{cursor:default;opacity:.6}
+.tl-cue.checked,.tl-take.checked{background:var(--color-primary);color:#fff;border-color:var(--color-primary-active)}
+.tl-cue.checked span,.tl-take.checked span{color:#fff}
+.tl-check{font-style:normal;font-weight:800;font-size:10px;flex:0 0 auto}
+.timeline-hint kbd{padding:0 4px;border:1px solid var(--color-border-strong);border-bottom-width:2px;border-radius:3px;background:var(--color-surface);font-family:inherit;font-size:9.5px}
+.timeline-hint b{color:var(--color-primary)}

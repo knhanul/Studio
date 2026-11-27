@@ -23,3 +23,11 @@ await test('picture take keeps spoken position: offset from screen time, trim do
   const cue={index:2,start:3.4,end:5,text:'b'};const t=p.pictureTake('takes/x.wav',cue,3.2,2.8,{start:.35,end:2.1});
   assert.equal(t.offset,-.2);assert.equal(t.trim_start,.35);assert.equal(t.trim_end,2.1);
   const span=p.takeSpan(t,[cue]);assert.ok(Math.abs(span.start-3.55)<1e-9,'voice heard where it was spoken (3.2+0.35)');assert.ok(Math.abs(span.end-5.3)<1e-9);});
+await test('multi-select sentences: ctrl toggles one, shift selects a range from the last clicked, result in time order',()=>{
+  const order=[1,2,3,4,5,6];
+  let s=p.selectCues(order,[],2,'toggle',null);assert.deepEqual(s,[2]);
+  s=p.selectCues(order,s,5,'range',2);assert.deepEqual(s,[2,3,4,5],'shift: 2..5');
+  s=p.selectCues(order,s,1,'toggle',5);assert.deepEqual(s,[1,2,3,4,5]);
+  s=p.selectCues(order,s,3,'toggle',1);assert.deepEqual(s,[1,2,4,5],'ctrl on a checked one removes it');
+  s=p.selectCues(order,s,4,'range',6);assert.deepEqual(s,[1,2],'shift on a checked one removes the range 4..6');
+  assert.deepEqual(p.selectCues(order,[],4,'range',null),[4],'no anchor: just that one');});
