@@ -6,9 +6,9 @@ import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {EngineController,EngineConfig} from './engine';
 import {probeLead,probeMedia,renderProject,resolveFfmpeg} from './ffmpeg';
-import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,normalizeProject,toSrt} from '../shared/project';
+import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,matchTakesByText,normalizeProject,toSrt} from '../shared/project';
 import {attachLibrary,fromCreatorProject,packageBgm,isCreatorProject,libraryFromCreator,libraryFromFiles,librarySummary,type CreatorProject} from '../shared/media';
-import type {ComposerProject,FfmpegStatus,MediaItem,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
+import type {ComposerProject,DubbingTake,FfmpegStatus,MediaItem,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
 
 // corsEnabled + Access-Control-Allow-Origin: 화면(file:// 또는 개발 서버)에서 fetch()로 녹음·음악을 읽을 수 있게 (파형·들어 보기·미리듣기)
 protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:true,corsEnabled:true}}]);
@@ -160,6 +160,24 @@ function registerIpc(){
   ipcMain.handle('media:probe',async(_e,file:string)=>{const st=ffmpeg();if(!st.ok)return {duration:null,hasAudio:false,lead:0};const f=path.resolve(dir(),file);const info=await probeMedia(st.path,f);
     return {...info,lead:kindOf(f)==='video'?await probeLead(st.path,f):0};});
   ipcMain.handle('take:save',async(_e,cue:number|null,data:ArrayBuffer)=>{ensureProject();const folder=path.join(dir(),'takes');const name=await uniqueName(folder,cue?`line_${String(cue).padStart(4,'0')}_v`:'free_v','wav');await writeFile(path.join(folder,name),Buffer.from(data));return `takes/${name}`;});
+  // 다른 작업(예전 편집 프로젝트)의 녹음을 문장이 같은 것끼리 짝지어 복사해 온다
+  ipcMain.handle('take:importFrom',async(_e,nowCues:SubtitleItem[],skip:number[])=>{
+    ensureProject();
+    const r=await dialog.showOpenDialog(win!,{title:'녹음을 가져올 예전 작업의 프로젝트 파일 (composer_project.json)',defaultPath:path.dirname(dir()),properties:['openFile'],filters:[{name:'편집 프로젝트 (JSON)',extensions:['json']}]});
+    if(r.canceled)return null;const src=r.filePaths[0];
+    if(path.resolve(src)===path.resolve(currentPath))throw new Error('지금 열려 있는 작업이에요. 녹음이 있는 예전 작업의 composer_project.json 을 골라 주세요.');
+    const old=normalizeProject(JSON.parse((await readFile(src,'utf8')).replace(/^\uFEFF/,'')));
+    if(!old.dubbing.takes.length)throw new Error('고른 작업에 녹음이 없어요.');
+    const {matches,unmatched}=matchTakesByText(old,nowCues,new Set(skip));
+    const base=path.dirname(src);const folder=path.join(dir(),'takes');await mkdir(folder,{recursive:true});
+    const takes:DubbingTake[]=[];let missing=0;
+    for(const m of matches){
+      const from=path.resolve(base,m.take.file);if(!existsSync(from)){missing++;continue;}
+      const name=await uniqueName(folder,`line_${String(m.to).padStart(4,'0')}_v`,extOf(from)||'wav');await copyFile(from,path.join(folder,name));
+      takes.push({...m.take,file:`takes/${name}`,subtitle:m.to});
+    }
+    return {title:old.title,takes,missing,unmatched:unmatched.map(u=>u.text),total:old.dubbing.takes.length};
+  });
   ipcMain.handle('take:import',async(_e,cue:number)=>{ensureProject();const r=await dialog.showOpenDialog(win!,{title:'녹음해 둔 음성 파일 선택',properties:['openFile'],filters:[{name:'오디오',extensions:AUDIO}]});if(r.canceled)return null;const src=r.filePaths[0];const folder=path.join(dir(),'takes');const name=await uniqueName(folder,`line_${String(cue).padStart(4,'0')}_file_v`,extOf(src)||'wav');await copyFile(src,path.join(folder,name));const rel=`takes/${name}`;const duration=ffmpeg().ok?(await probeMedia(ffmpeg().path,path.join(folder,name))).duration:null;return {file:rel,duration};});
   ipcMain.handle('subtitle:saveSrt',async(_e,items:SubtitleItem[])=>{const r=await dialog.showSaveDialog(win!,{defaultPath:path.join(dir(),'captions.srt'),filters:[{name:'SubRip',extensions:['srt']}]});if(r.canceled||!r.filePath)return null;await writeFile(r.filePath,toSrt(items),'utf8');return r.filePath;});
   ipcMain.handle('subtitle:importSrt',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openFile'],filters:[{name:'SubRip',extensions:['srt']}]});if(r.canceled)return null;return readFile(r.filePaths[0],'utf8');});
