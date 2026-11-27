@@ -26,21 +26,25 @@ export function usePreviewAudio({doc,urls,cues,playing,startAt,startKey,getPlayh
       const src=ctx.createBufferSource();src.buffer=buf;const g=ctx.createGain();g.gain.value=t.volume==null?1:Number(t.volume);src.connect(g).connect(voiceGain);
       src.start(ctx.currentTime+Math.max(0,s.start-now),(Number(t.trim_start)||0)+skip,len-skip);sources.push(src);
     }));
-    // 배경음악 + 추가 소리(음악 바꾸기·효과음): 구간 안에서만 재생, 페이드·자동 줄이기 근사
-    let raf=0;const duck=duckFactor(d.bgm);
-    const players=musicLayers(d).filter(l=>urls[l.file]).map(l=>{const a=new Audio(urls[l.file]);a.loop=l.loop;a.preload='auto';return {l,a,on:false};});
-    const tick=()=>{const now=getPlayhead();const voice=spans.some(({s})=>now>=s.start&&now<s.end);
-      for(const p of players){const inside=now>=p.l.start&&now<p.l.end;
-        if(inside&&!p.on){p.on=true;const a=p.a,l=p.l;
-          const begin=()=>{if(dead||!p.on)return;const pos=getPlayhead()-l.start+l.file_start;try{a.currentTime=a.duration&&l.loop?pos%a.duration:pos;}catch{/* 아직 못 읽음 */}void a.play().catch(()=>{});};
-          if(a.readyState>=1)begin();else a.addEventListener('loadedmetadata',begin,{once:true});}
-        else if(!inside&&p.on){p.on=false;p.a.pause();}
-        if(p.on)p.a.volume=Math.max(0,Math.min(1,p.l.volume*(voice&&p.l.duck?duck:1)*layerFade(p.l,now)));}
-      raf=requestAnimationFrame(tick);};
-    if(players.length)raf=requestAnimationFrame(tick);
-    return()=>{dead=true;cancelAnimationFrame(raf);for(const s of sources){try{s.stop();}catch{/* */}}voiceGain.disconnect();for(const p of players){p.a.pause();p.a.src='';}};
+    const stopMusic=playMusicLayers(d,urls,getPlayhead,t=>spans.some(({s})=>t>=s.start&&t<s.end));
+    return()=>{dead=true;for(const s of sources){try{s.stop();}catch{/* */}}voiceGain.disconnect();stopMusic();};
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[playing,startKey]);
+}
+/** 배경음악 + 추가 소리(음악 바꾸기·효과음)를 getTime() 시각에 맞춰 들려준다: 구간 안에서만 재생, 페이드·자동 줄이기 근사. 멈추는 함수를 돌려준다 */
+export function playMusicLayers(d:ComposerProject,urls:Record<string,string>,getTime:()=>number,isVoice:(t:number)=>boolean=()=>false):()=>void{
+  let dead=false;let raf=0;const duck=duckFactor(d.bgm);
+  const players=musicLayers(d).filter(l=>urls[l.file]).map(l=>{const a=new Audio(urls[l.file]);a.loop=l.loop;a.preload='auto';return {l,a,on:false};});
+  const tick=()=>{const now=getTime();const voice=isVoice(now);
+    for(const p of players){const inside=now>=p.l.start&&now<p.l.end;
+      if(inside&&!p.on){p.on=true;const a=p.a,l=p.l;
+        const begin=()=>{if(dead||!p.on)return;const pos=getTime()-l.start+l.file_start;try{a.currentTime=a.duration&&l.loop?pos%a.duration:pos;}catch{/* 아직 못 읽음 */}void a.play().catch(()=>{});};
+        if(a.readyState>=1)begin();else a.addEventListener('loadedmetadata',begin,{once:true});}
+      else if(!inside&&p.on){p.on=false;p.a.pause();}
+      if(p.on)p.a.volume=Math.max(0,Math.min(1,p.l.volume*(voice&&p.l.duck?duck:1)*layerFade(p.l,now)));}
+    raf=requestAnimationFrame(tick);};
+  if(players.length)raf=requestAnimationFrame(tick);
+  return()=>{dead=true;cancelAnimationFrame(raf);for(const p of players){p.a.pause();p.a.src='';}};
 }
 /** 녹음 하나만 바로 듣기 */
 export async function playTake(url:string,trimStart=0,trimEnd:number|null=null,volume=1):Promise<()=>void>{

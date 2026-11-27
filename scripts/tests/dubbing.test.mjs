@@ -14,3 +14,12 @@ await test('fit timeline keeps cue lengths without takes and respects min image 
 await test('fit timeline accounts for global subtitle offset',()=>{let x=base();x.subtitle.offset=1;x.subtitle.items=x.subtitle.items.map(c=>({...c,start:c.start-1,end:c.end-1}));x=p.setTakeForCue(x,{file:'a.wav',subtitle:1,duration:2});const y=p.fitTimelineToTakes(x);const c=p.projectCues(y)[0];assert.equal(c.start,.3);assert.equal(c.end,2.3);});
 await test('motion preview path matches render table',()=>{assert.deepEqual(p.motionState('zoom_in',.2,1),{z:1.2,fx:.5,fy:.5});assert.deepEqual(p.motionState('pan_left',.1,0),{z:1.1,fx:1,fy:.5});assert.equal(p.motionCss('none',.2,.5),'none');assert.match(p.motionCss('zoom_in',.2,1),/scale\(1\.2\)/);});
 await test('duck factor is a reduction',()=>{const k=p.duckFactor({duck_ratio:6});assert.ok(k>0&&k<1);});
+await test('picture dubbing windows: split between sentences by subtitle time, gaps trimmed',()=>{
+  const cues=[{index:1,start:1,end:3,text:'a'},{index:2,start:3.4,end:5,text:'b'},{index:3,start:9,end:10,text:'c'},{index:4,start:10,end:12,text:'d'}];
+  assert.deepEqual(p.dubWindows(cues,[1,2,3,4]),[{index:1,start:.7,end:3.2},{index:2,start:3.2,end:6},{index:3,start:8,end:10},{index:4,start:10,end:12.6}]);
+  assert.deepEqual(p.dubWindows(cues,[2,4]),[{index:2,start:3.1,end:6},{index:4,start:9,end:12.6}],'only chosen sentences');
+  assert.deepEqual(p.dubWindows([{index:1,start:.1,end:1,text:''}],[1]),[{index:1,start:0,end:1.6}]);});
+await test('picture take keeps spoken position: offset from screen time, trim does not move it',()=>{
+  const cue={index:2,start:3.4,end:5,text:'b'};const t=p.pictureTake('takes/x.wav',cue,3.2,2.8,{start:.35,end:2.1});
+  assert.equal(t.offset,-.2);assert.equal(t.trim_start,.35);assert.equal(t.trim_end,2.1);
+  const span=p.takeSpan(t,[cue]);assert.ok(Math.abs(span.start-3.55)<1e-9,'voice heard where it was spoken (3.2+0.35)');assert.ok(Math.abs(span.end-5.3)<1e-9);});
