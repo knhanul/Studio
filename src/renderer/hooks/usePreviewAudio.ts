@@ -46,6 +46,18 @@ export function playMusicLayers(d:ComposerProject,urls:Record<string,string>,get
   if(players.length)raf=requestAnimationFrame(tick);
   return()=>{dead=true;cancelAnimationFrame(raf);for(const p of players){p.a.pause();p.a.src='';}};
 }
+/** 녹음하며 다른 문장 녹음 듣기 (헤드폰): getTime() 시각에 맞춰 exclude 아닌 문장의 녹음을 들려준다. 멈추는 함수를 돌려준다 */
+export function playTakesAlong(d:ComposerProject,urls:Record<string,string>,cues:SubtitleItem[],getTime:()=>number,exclude:Set<number>):()=>void{
+  let dead=false;const ctx=audioContext();void ctx.resume();const sources:AudioBufferSourceNode[]=[];const latency=Number(d.dubbing.latency_ms)||0;
+  const gain=ctx.createGain();gain.gain.value=Number(d.dubbing.volume??1);gain.connect(ctx.destination);
+  void Promise.all(d.dubbing.takes.filter(t=>t.subtitle==null||!exclude.has(t.subtitle)).map(async t=>{
+    const buf=await loadBuffer(urls[t.file]);if(dead||!buf)return;const s=takeSpan({...t,duration:t.duration??buf.duration},cues,latency);
+    const len=takeLength({...t,duration:t.duration??buf.duration});const now=getTime();const skip=Math.max(0,now-s.start);if(skip>=len)return;
+    const src=ctx.createBufferSource();src.buffer=buf;const g=ctx.createGain();g.gain.value=t.volume==null?1:Number(t.volume);src.connect(g).connect(gain);
+    src.start(ctx.currentTime+Math.max(0,s.start-now),(Number(t.trim_start)||0)+skip,len-skip);sources.push(src);
+  }));
+  return()=>{dead=true;for(const s of sources){try{s.stop();}catch{/* */}}gain.disconnect();};
+}
 /** 녹음 하나만 바로 듣기 */
 export async function playTake(url:string,trimStart=0,trimEnd:number|null=null,volume=1):Promise<()=>void>{
   const buf=await loadBuffer(url);if(!buf)throw new Error('녹음 파일을 읽지 못했어요.');
