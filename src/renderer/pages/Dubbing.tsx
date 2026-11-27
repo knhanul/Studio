@@ -1,7 +1,7 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import {Captions,Check,ChevronLeft,Film,Settings2,ChevronRight,Circle,FileAudio,ListChecks,Mic2,Play,RefreshCw,Repeat,Scissors,Square,Trash2,Wand2,X} from 'lucide-react';
 import {DEFAULT_PAUSE,detectVoiceBounds,encodeWav,meterFraction,pauseStart,pauseStep,splitAtMarks,waveformPeaks,type PauseState} from '../../shared/audio';
-import {applyTrim,dubWindows,fitTimelineToTakes,pictureTake,removeTakeForCue,round,setTakeForCue,sortCues,takeForCue,takeLength,timeline,type DubWindow} from '../../shared/project';
+import {applyTrim,dubWindows,fitTimelineToTakes,pictureTake,removeTakeForCue,round,setTakeForCue,sortCues,takeForCue,takeLength,takeSpan,timeline,type DubWindow} from '../../shared/project';
 import type {DubbingTake,StepId} from '../../shared/types';
 import {SidePanel,StepLayout} from '../components/Shell';
 import {Timeline,type TimelineLive} from '../components/Timeline';
@@ -11,17 +11,20 @@ import {loadBuffer,playMusicLayers,playTake,playTakesAlong} from '../hooks/usePr
 import {Monitor} from '../components/Monitor';
 import {useRecorder} from '../hooks/useRecorder';
 
-type Phase='idle'|'countdown'|'recording'|'saving';
+type Phase='idle'|'countdown'|'recording'|'saving'|'playing';
 interface Opts{/** 시작 전 준비: 바로 · 1초 · 3초 카운트다운 */prep:0|1|3;autoNext:boolean;autoTrim:boolean;autoFit:boolean;
   /** 연속 녹음: 쉬면 자동으로 다음 문장 · 쉬는 시간(초) */pauseNext:boolean;pauseSec:number;
   /** 영상 보며 녹음 (자막 시간 기준으로 문장이 넘어감) · 녹음 중 배경음악 듣기(헤드폰) */picture:boolean;listenBgm:boolean;
-  /** 녹음하며 다른 문장 녹음 듣기(헤드폰) */listenTakes:boolean}
+  /** 녹음하며 다른 문장 녹음 듣기(헤드폰) */listenTakes:boolean;
+  /** 저장된 설정 형식 (2: 쉼으로 넘기기를 기본 끔) */v?:number}
 const OPTS_KEY='studio-dub-options';
-const BASE_OPTS:Opts={prep:3,autoNext:true,autoTrim:true,autoFit:true,pauseNext:true,pauseSec:1,picture:true,listenBgm:false,listenTakes:false};
+const BASE_OPTS:Opts={v:2,prep:3,autoNext:true,autoTrim:true,autoFit:true,pauseNext:false,pauseSec:1,picture:true,listenBgm:false,listenTakes:false};
 const loadOpts=():Opts=>{try{const raw=JSON.parse(localStorage.getItem(OPTS_KEY)||'{}') as Partial<Opts>&{countdown?:boolean};
   // 예전 설정(3초 카운트다운 켜기/끄기) 이어받기
   const prep:Opts['prep']=raw.prep===0||raw.prep===1||raw.prep===3?raw.prep:raw.countdown===false?1:3;
-  return {...BASE_OPTS,...raw,prep};}catch{return BASE_OPTS;}};
+  // v2: 연속 녹음은 N·Space 로 넘기는 것이 기본 — 예전에 저장된 「쉬면 자동으로 다음 문장」은 한 번 끈다
+  const pauseNext=raw.v===2?Boolean(raw.pauseNext):false;
+  return {...BASE_OPTS,...raw,prep,pauseNext,v:2};}catch{return BASE_OPTS;}};
 const PREPS=[{id:0 as const,label:'바로'},{id:1 as const,label:'1초'},{id:3 as const,label:'3초 카운트다운'}];
 /** 녹음 범위: 이 문장 · 체크한 문장 · 여기부터 끝까지 */
 type Scope='one'|'checked'|'rest';
@@ -37,7 +40,7 @@ function DubMonitor({clock,idle}:{clock:{from:number;startedAt:number}|null;idle
 }
 const fmtT=(sec:number)=>`${String(Math.floor(sec/60)).padStart(2,'0')}:${(sec%60).toFixed(1).padStart(4,'0')}`;
 /** 녹음 중 원형 타이머: 문장 시작까지 · 다음 문장까지 · 끝까지 (자기 시계로 0.1초마다만 다시 그림) */
-function NextRing({clock,windows}:{clock:{from:number;startedAt:number};windows:DubWindow[]}){
+function NextRing({clock,windows,play=false}:{clock:{from:number;startedAt:number};windows:DubWindow[];play?:boolean}){
   const [t,setT]=useState(()=>picNow(clock));
   useEffect(()=>{let raf=0;const tick=()=>{const v=Math.floor(picNow(clock)*10)/10;setT(x=>x===v?x:v);raf=requestAnimationFrame(tick);};raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);},[clock]);
   const k=windows.findIndex(w=>t<w.end);const w=windows[k<0?windows.length-1:k];
@@ -45,10 +48,10 @@ function NextRing({clock,windows}:{clock:{from:number;startedAt:number};windows:
   const left=before?windows[0].start-t:Math.max(0,w.end-t);
   const span=before?Math.max(.1,windows[0].start-clock.from):Math.max(.1,w.end-Math.max(w.start,windows[0].start));
   const soon=!before&&left<1.5;
-  const label=before?'녹음 시작까지':k>=0&&k<windows.length-1?'다음 문장까지':'끝까지';
+  const label=before?(play?'문장 시작까지':'녹음 시작까지'):k>=0&&k<windows.length-1?'다음 문장까지':'끝까지';
   return <><span className="side-label">{label}</span>
     <div className={`ring ${soon?'soon':''} ${before?'wait':''}`} style={{['--p' as string]:String(Math.max(0,Math.min(1,left/span)))}}><div><strong>{left.toFixed(1)}</strong><small>초</small></div></div>
-    <span className={`side-hint ${soon?'soon':''}`}>{before?'화면을 보며 준비하세요':soon?(label==='끝까지'?'곧 끝나요':'숨 고르고 다음 문장 준비'):'지금 문장을 읽으세요'}</span></>;
+    <span className={`side-hint ${soon?'soon':''}`}>{play?(before?'곧 들려요':'녹음한 목소리를 듣는 중'):before?'화면을 보며 준비하세요':soon?(label==='끝까지'?'곧 끝나요':'숨 고르고 다음 문장 준비'):'지금 문장을 읽으세요'}</span></>;
 }
 /** 대본 띠의 지금 문장 진행 막대 */
 function LiveBar({clock,windows,index}:{clock:{from:number;startedAt:number};windows:DubWindow[];index:number}){
@@ -76,7 +79,7 @@ function RecordSettings({opts,setOpt,latency,setLatency,onClose}:{opts:Opts;setO
       <label className="rs-check"><input type="checkbox" checked={opts.autoNext} onChange={e=>setOpt('autoNext',e.target.checked)}/> 다음 문장 이어서 녹음 <small>(「이 문장」으로 녹음할 때)</small></label>
       <label className="rs-check"><input type="checkbox" checked={opts.autoTrim} onChange={e=>setOpt('autoTrim',e.target.checked)}/> 앞뒤 무음 자동으로 자르기</label>
       {!opts.picture&&<label className="rs-check"><input type="checkbox" checked={opts.autoFit} onChange={e=>setOpt('autoFit',e.target.checked)}/> 녹음 길이에 장면·자막 맞추기</label>}
-      {!opts.picture&&<label className="rs-check"><input type="checkbox" checked={opts.pauseNext} onChange={e=>setOpt('pauseNext',e.target.checked)}/> 연속 녹음: 쉬면 자동으로 다음 문장</label>}
+      {!opts.picture&&<label className="rs-check"><input type="checkbox" checked={opts.pauseNext} onChange={e=>setOpt('pauseNext',e.target.checked)}/> 연속 녹음: 쉬면 자동으로 다음 문장 <small>(끄면 N·Space 로 넘겨요)</small></label>}
       {!opts.picture&&opts.pauseNext&&<div className="rs-indent"><Segmented label="쉬는 시간" value={opts.pauseSec} options={PAUSES} onChange={v=>setOpt('pauseSec',v)}/></div>}
     </div>
     {opts.picture&&<div className="rs-group"><span className="rs-label">듣기 (헤드폰일 때만 — 스피커면 마이크에 들어가요)</span>
@@ -264,6 +267,41 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[clock]);
   /** 녹음 범위에 따라 시작: 이 문장 · 체크한 문장 · 여기부터 끝까지 */
+  // ── 이어 듣기: 고른 범위를 영상·자막과 함께 재생하며 녹음한 문장들을 이어서 들려준다 (배경음악·자동 줄이기 포함) ──
+  const playRef=useRef<{windows:DubWindow[];ranges:{start:number;end:number}[];k:number;clock?:{from:number;startedAt:number}}|null>(null);
+  const stopAudio=useRef<(()=>void)|null>(null);
+  const playRange=useCallback((k:number)=>{
+    const p=playRef.current;if(!p)return;const r=p.ranges[k];p.k=k;stopAudio.current?.();
+    const c={from:r.start,startedAt:performance.now()};p.clock=c;const getTime=()=>picNow(c);
+    const latency=Number(doc.dubbing.latency_ms)||0;const spans=doc.dubbing.takes.map(t=>takeSpan(t,cues,latency));
+    // 고른 문장의 녹음만 들려준다 (옆 문장 녹음이 구간 끝에 섞여 들리지 않게)
+    const others=new Set(cues.map(x=>x.index).filter(i=>!p.windows.some(w=>w.index===i)));
+    const stops=[playTakesAlong(doc,urls,cues,getTime,others),playMusicLayers(doc,urls,getTime,t=>spans.some(s=>t>=s.start&&t<s.end))];
+    stopAudio.current=()=>stops.forEach(f=>f());
+    setClock(c);setLive({clock:c,recStart:null,windows:p.windows});
+  },[doc,urls,cues]);
+  const stopPlayback=useCallback(()=>{const p=playRef.current;if(!p)return;playRef.current=null;stopAudio.current?.();stopAudio.current=null;
+    setClock(null);setLive(null);setPhase('idle');if(p.clock)seek(Math.max(0,picNow(p.clock)));},[seek]);
+  const startPlayback=useCallback((queue:number[])=>{
+    const q=items.filter(x=>queue.includes(x.index)).map(x=>x.index);if(!q.length)return;
+    setPlaying(false);setShowSettings(false);
+    const windows=dubWindows(cues,q);if(!windows.length)return;
+    // 이어지는 문장은 한 번에, 떨어진 문장은 건너뛰며 재생
+    const ranges:{start:number;end:number}[]=[];for(const w of windows){const last=ranges[ranges.length-1];if(last&&w.start-last.end<.05)last.end=w.end;else ranges.push({start:w.start,end:w.end});}
+    playRef.current={windows,ranges,k:0};setSelectedCue(q[0]);setPhase('playing');playRange(0);
+  },[items,cues,setPlaying,setSelectedCue,playRange]);
+  // 재생 시계에 맞춰 지금 문장 표시, 구간 끝에서 다음 구간으로 건너뛰거나 멈추기
+  useEffect(()=>{if(!clock||!playRef.current)return;let raf=0;let shown=-1;
+    const tick=()=>{const p=playRef.current;if(!p)return;const t=picNow(clock);const r=p.ranges[p.k];
+      if(t>=r.end){if(p.k+1<p.ranges.length)playRange(p.k+1);else stopPlayback();return;}
+      const w=p.windows.find(x=>t>=x.start&&t<x.end);if(w&&w.index!==shown){shown=w.index;setSelectedCue(w.index);}
+      raf=requestAnimationFrame(tick);};
+    raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[clock]);
+  const scopeQueue=():number[]=>curIndex==null?[]:scope==='one'?[curIndex]:scope==='checked'?checked:items.slice(Math.max(0,pos)).map(c=>c.index);
+  /** 듣다가 지금 문장을 바로 다시 녹음 */
+  const rerecordHere=()=>{const idx=selectedCue??curIndex;stopPlayback();if(idx!=null){setScope('one');setTimeout(()=>void begin(idx),0);}};
   const startScope=()=>{if(curIndex==null)return;setShowSettings(false);
     if(scope==='one'){void begin(curIndex);return;}
     if(scope==='checked'){if(checked.length)void startCont(checked);return;}
@@ -272,6 +310,11 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
   useEffect(()=>{if(phase!=='recording')return;let raf=0;const t=()=>{const e=Math.floor(rec.elapsed()*10)/10;setElapsed(v=>v===e?v:e);raf=requestAnimationFrame(t);};raf=requestAnimationFrame(t);return()=>cancelAnimationFrame(raf);},[phase,rec]);
   // 키보드: R = 녹음/정지, N = 저장하고 다음 문장, Esc = 취소
   useEffect(()=>{const fn=(e:KeyboardEvent)=>{if((e.target as HTMLElement)?.closest('input,textarea,select'))return;const k=e.key.toLowerCase();
+    if(playRef.current){
+      if(k===' '||k==='escape'||k==='p'){e.preventDefault();stopPlayback();}
+      else if(k==='r'){e.preventDefault();rerecordHere();}
+      return;}
+    if((k===' '||k==='p')&&phase==='idle'&&curIndex!=null&&!(scope==='checked'&&!checked.length)){e.preventDefault();(e.target as HTMLElement)?.blur?.();startPlayback(scopeQueue());return;}
     if(picRef.current){
       if(k==='r'){e.preventDefault();void finishPicture('save');}
       else if(k==='escape'){e.preventDefault();cancel();}
@@ -285,7 +328,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
     else if(k==='n'&&phase==='recording'){e.preventDefault();void finish(curIndex!,'next');}
     else if(k==='escape'&&(phase==='recording'||phase==='countdown')){e.preventDefault();cancel();}};
     window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);});
-  useEffect(()=>()=>{abort.current=true;rec.setChunkListener(null);if(picRef.current){picRef.current=null;rec.stop();}stopMusic.current?.();},[]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>()=>{abort.current=true;playRef.current=null;stopAudio.current?.();rec.setChunkListener(null);if(picRef.current){picRef.current=null;rec.stop();}stopMusic.current?.();},[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const recorded=items.filter(c=>takeForCue(doc,c.index)).length;
   const sceneOf=(idx:number)=>{const c=shown(idx);if(!c)return null;const tl=timeline(doc);return tl.find(t=>c.start>=t.start&&c.start<t.end)||tl[tl.length-1];};
@@ -305,6 +348,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
         <span>{opts.picture?'영상 보며':'대본만 보며'}</span>
         <span>{opts.prep===0?'바로 시작':opts.prep===1?'1초 뒤 시작':'카운트다운 3초'}</span>
         {opts.autoNext&&<span>이어서 녹음</span>}
+        {!opts.picture&&<span>{opts.pauseNext?'쉬면 다음 문장':'N·Space 로 다음 문장'}</span>}
         {(opts.listenBgm||opts.listenTakes)&&opts.picture&&<span>헤드폰 듣기</span>}
       </div>
       <div className="settings-anchor">
@@ -332,7 +376,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
         </div>}
       <div className="dub-side">
         <div className="side-card ring-card">
-          {live?<NextRing clock={live.clock} windows={live.windows}/>
+          {live?<NextRing clock={live.clock} windows={live.windows} play={phase==='playing'}/>
             :<><span className="side-label">{phase==='recording'?'녹음한 시간':'이 문장 자막'}</span>
               <div className="ring" style={{['--p' as string]:'0'}}><div><strong>{phase==='recording'?elapsed.toFixed(1):(cur?Math.max(0,cur.end-cur.start):0).toFixed(1)}</strong><small>초</small></div></div>
               <span className="side-hint">{phase==='saving'?'저장 중…':phase==='idle'?(cur&&takeForCue(doc,cur.index)?`녹음됨 ${takeLength(takeForCue(doc,cur.index)!).toFixed(1)}초`:'아직 녹음 안 함'):''}</span></>}
@@ -355,7 +399,10 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
 
     <div className="dub-controls">
       <IconButton label="이전 문장" disabled={busy||pos<=0} onClick={()=>focus(items[pos-1].index)}><ChevronLeft size={18}/></IconButton>
-      {clock
+      {phase==='playing'
+        ?<><button type="button" className="play-button on" onClick={stopPlayback} title="멈추기 (Space · Esc)"><Square size={15}/> 멈추기</button>
+           <button type="button" className="rec-button" onClick={rerecordHere} title="지금 들리는 문장을 바로 다시 녹음 (R)"><Circle size={14} fill="currentColor"/> 이 문장 다시 녹음</button></>
+        :clock
         ?<><button type="button" className="rec-button stop" onClick={()=>void finishPicture('save')} title="여기까지 저장하고 끝내기 (R)"><Square size={16}/> 끝내고 저장</button>
            <Button kind="outline" onClick={cancel} title="저장하지 않고 취소 (Esc)">취소</Button></>
         :phase==='recording'&&cont
@@ -369,17 +416,18 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
         :phase==='countdown'?<Button kind="outline" onClick={cancel}>취소</Button>
         :<>
           <Segmented label="녹음 범위" value={scope} options={[{id:'one' as Scope,label:'이 문장'},{id:'checked' as Scope,label:checked.length?`선택한 ${checked.length}개`:'선택한 문장'},{id:'rest' as Scope,label:'여기부터 끝까지'}]} onChange={setScope}/>
+          <button type="button" className="play-button" disabled={busy||!cur||(scope==='checked'&&!checked.length)} onClick={()=>startPlayback(scopeQueue())} title="고른 범위를 영상과 함께 재생하며 녹음한 목소리를 이어서 들어요 (Space)"><Play size={14} fill="currentColor"/> 이어 듣기</button>
           <button type="button" className="rec-button" disabled={busy||!cur||(scope==='checked'&&!checked.length)} onClick={startScope} title={scope==='checked'&&!checked.length?'오른쪽 목록에서 체크하거나 타임라인 자막을 Ctrl·Shift+클릭해 고르세요':'녹음 시작 (R)'}><Circle size={14} fill="currentColor"/> {scope==='one'&&cur&&takeForCue(doc,cur.index)?'다시 녹음':'녹음 시작'}</button>
         </>}
       <IconButton label="다음 문장" disabled={busy||!next} onClick={()=>next&&focus(next.index)}><ChevronRight size={18}/></IconButton>
-      <span className="key-hint">{busy?<><kbd>R</kbd> 저장 <kbd>Esc</kbd> 취소{cont&&!clock?<> <kbd>N</kbd> 다음 문장</>:null}</>:<><kbd>R</kbd> 녹음 시작 <kbd>‹</kbd><kbd>›</kbd> 문장 고르기</>}</span>
+      <span className="key-hint">{phase==='playing'?<><kbd>Space</kbd> 멈추기 <kbd>R</kbd> 이 문장 다시 녹음</>:busy?<><kbd>R</kbd> 저장 <kbd>Esc</kbd> 취소{cont&&!clock?<> <kbd>N</kbd>·<kbd>Space</kbd> 다음 문장</>:null}</>:<><kbd>Space</kbd> 이어 듣기 <kbd>R</kbd> 녹음 시작</>}</span>
     </div>
     <Timeline live={live} multiSelect={!busy}/>
   </div>;
-  return <StepLayout header={header} actionBar={actionBar} panel={items.length?<DubbingPanel busy={busy} curIndex={curIndex} onRecord={idx=>void begin(idx)} onFocus={focus} checked={checked} setChecked={setChecked} onRecordMany={q=>{setScope('checked');void startCont(q);}} activeQueue={cont?.queue??(busy&&curIndex!=null?[curIndex]:[])} recordingCue={phase==='recording'?curIndex:null} justDone={justDone}/>:undefined}>{main}</StepLayout>;
+  return <StepLayout header={header} actionBar={actionBar} panel={items.length?<DubbingPanel busy={busy} curIndex={curIndex} onRecord={idx=>void begin(idx)} onFocus={focus} checked={checked} setChecked={setChecked} onRecordMany={q=>{setScope('checked');void startCont(q);}} activeQueue={phase==='playing'?(playRef.current?.windows.map(w=>w.index)??[]):cont?.queue??(busy&&curIndex!=null?[curIndex]:[])} playing={phase==='playing'} recordingCue={phase==='recording'?curIndex:null} justDone={justDone}/>:undefined}>{main}</StepLayout>;
 }
 
-function DubbingPanel({busy,curIndex,onRecord,onFocus,checked,setChecked,onRecordMany,activeQueue,recordingCue,justDone}:{busy:boolean;curIndex:number|null;onRecord:(idx:number)=>void;onFocus:(idx:number)=>void;
+function DubbingPanel({busy,curIndex,onRecord,onFocus,checked,setChecked,onRecordMany,activeQueue,recordingCue,justDone,playing=false}:{busy:boolean;playing?:boolean;curIndex:number|null;onRecord:(idx:number)=>void;onFocus:(idx:number)=>void;
   checked:number[];setChecked:(v:number[]|((c:number[])=>number[]))=>void;onRecordMany:(queue:number[])=>void;
   /** 이번 녹음에 들어가는 문장 · 지금 녹음 중인 문장 · 막 녹음한 문장 */activeQueue:number[];recordingCue:number|null;justDone:number[]}){
   const {doc,commit,urls,toast,pickCue}=useEditor();
@@ -403,17 +451,17 @@ function DubbingPanel({busy,curIndex,onRecord,onFocus,checked,setChecked,onRecor
       <Button size="sm" kind="ghost" disabled={busy} onClick={()=>setChecked(items.filter(c=>!takeForCue(doc,c.index)).map(c=>c.index))}>미녹음만</Button>
       <Button size="sm" kind="ghost" disabled={busy||!checked.length} onClick={()=>setChecked([])}>해제</Button>
     </div>}
-    {busy&&<p className="cue-busy-note">녹음하는 동안 목록은 잠겨요. 이번에 녹음할 문장 {activeQueue.length}개가 표시돼요.</p>}
+    {busy&&<p className="cue-busy-note">{playing?`듣는 동안 목록은 잠겨요. 이번에 들을 문장 ${activeQueue.length}개가 표시돼요.`:`녹음하는 동안 목록은 잠겨요. 이번에 녹음할 문장 ${activeQueue.length}개가 표시돼요.`}</p>}
     {!busy&&checked.length>0&&<div className="cue-select-actions">
       <Button size="sm" disabled={busy} onClick={()=>onRecordMany(checked)} title="마이크를 멈추지 않고 고른 문장을 차례로 녹음해요. 문장 사이에서 쉬거나 N·Space를 누르면 다음 문장으로 넘어가요"><Repeat size={14}/> 선택한 {checked.length}개 녹음</Button>
       <Button size="sm" kind="danger" disabled={busy||!checkedTakes.length} onClick={removeChecked} title="선택한 문장의 녹음 연결을 지워요 (파일은 남겨 둬요)"><Trash2 size={14}/> 녹음 {checkedTakes.length}개 지우기</Button>
     </div>}
     <ol className="cue-list">{items.map((c,k)=>{const t=takeForCue(doc,c.index);const on=sel.has(c.index);
-      const state=recordingCue===c.index?'recording':busy&&activeQueue.includes(c.index)?'queued':justDone.includes(c.index)?'just':'';
+      const state=playing&&c.index===curIndex?'playing':recordingCue===c.index?'recording':busy&&activeQueue.includes(c.index)?'queued':justDone.includes(c.index)?'just':'';
       return <li key={c.index} className={`${c.index===curIndex&&!busy?'selected':''} ${on&&!busy?'checked':''} ${state?`is-${state}`:''} ${busy&&!activeQueue.includes(c.index)?'dim':''}`}>
       <button type="button" role="checkbox" aria-checked={on} aria-label={`문장 ${k+1} 고르기`} className={`cue-check ${on?'on':''}`} title="여러 개 고르기 (Shift: 범위)" disabled={busy} onClick={e=>toggle(c.index,e.shiftKey)}><Check size={12} strokeWidth={3}/></button>
       <button type="button" disabled={busy} onClick={e=>{if(e.ctrlKey||e.metaKey||e.shiftKey){toggle(c.index,e.shiftKey);return;}pickCue(c.index,'anchor');onFocus(c.index);}}>
-      <span className="cue-num">{k+1}</span><span className="cue-text">{c.text||<em>(빈 문장)</em>}</span>{state==='recording'?<span className="tag tag-rec">● 녹음 중</span>:state==='queued'&&!t?<span className="tag">대기</span>:t?<span className="tag tag-success">{state==='just'?'방금 · ':''}{takeLength(t).toFixed(1)}초</span>:<span className="tag">미녹음</span>}</button></li>;})}</ol>
+      <span className="cue-num">{k+1}</span><span className="cue-text">{c.text||<em>(빈 문장)</em>}</span>{state==='playing'?<span className="tag tag-play">▶ 듣는 중</span>:state==='recording'?<span className="tag tag-rec">● 녹음 중</span>:state==='queued'&&!t?<span className="tag">대기</span>:t?<span className="tag tag-success">{state==='just'?'방금 · ':''}{takeLength(t).toFixed(1)}초</span>:<span className="tag">미녹음</span>}</button></li>;})}</ol>
     {curIndex!=null&&<Section title="선택한 문장의 녹음">
       {take?<>
         <Waveform url={urls[take.file]} take={take}/>
