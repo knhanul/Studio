@@ -10,7 +10,7 @@ import {useElementSize} from '../hooks/useElementSize';
 export interface TimelineLive{clock:{from:number;startedAt:number};recStart:number|null;windows:{index:number;start:number;end:number}[]}
 /** 간단한 타임라인: 장면 / 더빙 / 자막 / 배경음악 줄. 누르면 그 시점으로 이동.
  *  live 를 주면 재생 위치 선이 그 시계를 따라 움직이고(앱 전체를 다시 그리지 않고 선만 옮김), 녹음된 부분을 칠해 보여 준다 */
-const liveNow=(l:TimelineLive)=>l.clock.from+(performance.now()-l.clock.startedAt)/1000;
+const liveNow=(l:TimelineLive)=>Math.max(0,l.clock.from+(performance.now()-l.clock.startedAt)/1000);
 /** multiSelect: 자막·녹음 칸을 Ctrl(하나씩)·Shift(범위)+클릭해 여러 문장 고르기 (더빙 단계) */
 export function Timeline({live,multiSelect=false}:{live?:TimelineLive|null;multiSelect?:boolean}={}){
   const {doc,tracks,total,cues,playhead,seek,selectedClip,setSelectedClip,selectedCue,setSelectedCue,urls,selectedAudio,setSelectedAudio,checkedCues,pickCue}=useEditor();
@@ -31,7 +31,7 @@ export function Timeline({live,multiSelect=false}:{live?:TimelineLive|null;multi
   const headRef=useRef<HTMLDivElement>(null);const recRef=useRef<HTMLDivElement>(null);
   // 녹음 중: 재생 위치 선과 녹음된 부분만 직접 옮긴다 (60fps 로 타임라인 전체를 다시 그리지 않게). 화면 밖으로 나가면 따라 스크롤
   useEffect(()=>{if(!live)return;let raf=0;
-    const tick=()=>{const t=live.clock.from+(performance.now()-live.clock.startedAt)/1000;const px=t*pps;
+    const tick=()=>{const t=liveNow(live);const px=t*pps;
       if(headRef.current)headRef.current.style.left=`${px}px`;
       if(recRef.current){const rs=live.recStart;recRef.current.style.width=rs==null||t<rs?'0px':`${(t-rs)*pps}px`;}
       const sc=scroller.current;if(sc){const view=sc.clientWidth;if(px<sc.scrollLeft+20||px>sc.scrollLeft+view*.8)sc.scrollLeft=Math.max(0,px-view*.3);}
