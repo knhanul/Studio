@@ -15,13 +15,16 @@ type Phase='idle'|'countdown'|'recording'|'saving'|'playing';
 interface Opts{/** 시작 전 준비: 바로 · 1초 · 3초 카운트다운 */prep:0|1|3;autoNext:boolean;autoTrim:boolean;autoFit:boolean;
   /** 연속 녹음: 쉬면 자동으로 다음 문장 · 쉬는 시간(초) */pauseNext:boolean;pauseSec:number;
   /** 영상 보며 녹음 (자막 시간 기준으로 문장이 넘어감) · 녹음 중 배경음악 듣기(헤드폰) */picture:boolean;listenBgm:boolean;
-  /** 녹음하며 다른 문장 녹음 듣기(헤드폰) */listenTakes:boolean}
+  /** 녹음하며 다른 문장 녹음 듣기(헤드폰) */listenTakes:boolean;
+  /** 저장된 설정 형식 (2: 쉼으로 넘기기를 기본 끔) */v?:number}
 const OPTS_KEY='studio-dub-options';
-const BASE_OPTS:Opts={prep:3,autoNext:true,autoTrim:true,autoFit:true,pauseNext:true,pauseSec:1,picture:true,listenBgm:false,listenTakes:false};
+const BASE_OPTS:Opts={v:2,prep:3,autoNext:true,autoTrim:true,autoFit:true,pauseNext:false,pauseSec:1,picture:true,listenBgm:false,listenTakes:false};
 const loadOpts=():Opts=>{try{const raw=JSON.parse(localStorage.getItem(OPTS_KEY)||'{}') as Partial<Opts>&{countdown?:boolean};
   // 예전 설정(3초 카운트다운 켜기/끄기) 이어받기
   const prep:Opts['prep']=raw.prep===0||raw.prep===1||raw.prep===3?raw.prep:raw.countdown===false?1:3;
-  return {...BASE_OPTS,...raw,prep};}catch{return BASE_OPTS;}};
+  // v2: 연속 녹음은 N·Space 로 넘기는 것이 기본 — 예전에 저장된 「쉬면 자동으로 다음 문장」은 한 번 끈다
+  const pauseNext=raw.v===2?Boolean(raw.pauseNext):false;
+  return {...BASE_OPTS,...raw,prep,pauseNext,v:2};}catch{return BASE_OPTS;}};
 const PREPS=[{id:0 as const,label:'바로'},{id:1 as const,label:'1초'},{id:3 as const,label:'3초 카운트다운'}];
 /** 녹음 범위: 이 문장 · 체크한 문장 · 여기부터 끝까지 */
 type Scope='one'|'checked'|'rest';
@@ -76,7 +79,7 @@ function RecordSettings({opts,setOpt,latency,setLatency,onClose}:{opts:Opts;setO
       <label className="rs-check"><input type="checkbox" checked={opts.autoNext} onChange={e=>setOpt('autoNext',e.target.checked)}/> 다음 문장 이어서 녹음 <small>(「이 문장」으로 녹음할 때)</small></label>
       <label className="rs-check"><input type="checkbox" checked={opts.autoTrim} onChange={e=>setOpt('autoTrim',e.target.checked)}/> 앞뒤 무음 자동으로 자르기</label>
       {!opts.picture&&<label className="rs-check"><input type="checkbox" checked={opts.autoFit} onChange={e=>setOpt('autoFit',e.target.checked)}/> 녹음 길이에 장면·자막 맞추기</label>}
-      {!opts.picture&&<label className="rs-check"><input type="checkbox" checked={opts.pauseNext} onChange={e=>setOpt('pauseNext',e.target.checked)}/> 연속 녹음: 쉬면 자동으로 다음 문장</label>}
+      {!opts.picture&&<label className="rs-check"><input type="checkbox" checked={opts.pauseNext} onChange={e=>setOpt('pauseNext',e.target.checked)}/> 연속 녹음: 쉬면 자동으로 다음 문장 <small>(끄면 N·Space 로 넘겨요)</small></label>}
       {!opts.picture&&opts.pauseNext&&<div className="rs-indent"><Segmented label="쉬는 시간" value={opts.pauseSec} options={PAUSES} onChange={v=>setOpt('pauseSec',v)}/></div>}
     </div>
     {opts.picture&&<div className="rs-group"><span className="rs-label">듣기 (헤드폰일 때만 — 스피커면 마이크에 들어가요)</span>
@@ -345,6 +348,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
         <span>{opts.picture?'영상 보며':'대본만 보며'}</span>
         <span>{opts.prep===0?'바로 시작':opts.prep===1?'1초 뒤 시작':'카운트다운 3초'}</span>
         {opts.autoNext&&<span>이어서 녹음</span>}
+        {!opts.picture&&<span>{opts.pauseNext?'쉬면 다음 문장':'N·Space 로 다음 문장'}</span>}
         {(opts.listenBgm||opts.listenTakes)&&opts.picture&&<span>헤드폰 듣기</span>}
       </div>
       <div className="settings-anchor">
@@ -416,7 +420,7 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
           <button type="button" className="rec-button" disabled={busy||!cur||(scope==='checked'&&!checked.length)} onClick={startScope} title={scope==='checked'&&!checked.length?'오른쪽 목록에서 체크하거나 타임라인 자막을 Ctrl·Shift+클릭해 고르세요':'녹음 시작 (R)'}><Circle size={14} fill="currentColor"/> {scope==='one'&&cur&&takeForCue(doc,cur.index)?'다시 녹음':'녹음 시작'}</button>
         </>}
       <IconButton label="다음 문장" disabled={busy||!next} onClick={()=>next&&focus(next.index)}><ChevronRight size={18}/></IconButton>
-      <span className="key-hint">{phase==='playing'?<><kbd>Space</kbd> 멈추기 <kbd>R</kbd> 이 문장 다시 녹음</>:busy?<><kbd>R</kbd> 저장 <kbd>Esc</kbd> 취소{cont&&!clock?<> <kbd>N</kbd> 다음 문장</>:null}</>:<><kbd>Space</kbd> 이어 듣기 <kbd>R</kbd> 녹음 시작</>}</span>
+      <span className="key-hint">{phase==='playing'?<><kbd>Space</kbd> 멈추기 <kbd>R</kbd> 이 문장 다시 녹음</>:busy?<><kbd>R</kbd> 저장 <kbd>Esc</kbd> 취소{cont&&!clock?<> <kbd>N</kbd>·<kbd>Space</kbd> 다음 문장</>:null}</>:<><kbd>Space</kbd> 이어 듣기 <kbd>R</kbd> 녹음 시작</>}</span>
     </div>
     <Timeline live={live} multiSelect={!busy}/>
   </div>;
