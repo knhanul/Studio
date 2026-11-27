@@ -32,8 +32,8 @@ const picNow=(p:{from:number;startedAt:number})=>p.from+(performance.now()-p.sta
 /** 더빙 화면의 영상: 자기 시계로만 다시 그려(앱 전체를 다시 그리지 않음) 녹음이 끊기지 않게 한다. 소리는 내지 않는다 */
 function DubMonitor({clock,idle}:{clock:{from:number;startedAt:number}|null;idle:number}){
   const [t,setT]=useState(idle);
-  useEffect(()=>{if(!clock){setT(idle);return;}let raf=0;const tick=()=>{setT(picNow(clock));raf=requestAnimationFrame(tick);};raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);},[clock,idle]);
-  return <Monitor time={t} run={!!clock} silent showTransport={false}/>;
+  useEffect(()=>{if(!clock){setT(idle);return;}let raf=0;const tick=()=>{setT(Math.max(0,picNow(clock)));raf=requestAnimationFrame(tick);};raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);},[clock,idle]);
+  return <Monitor time={t} run={!!clock&&t>0} silent showTransport={false}/>;
 }
 const fmtT=(sec:number)=>`${String(Math.floor(sec/60)).padStart(2,'0')}:${(sec%60).toFixed(1).padStart(4,'0')}`;
 /** 녹음 중 원형 타이머: 문장 시작까지 · 다음 문장까지 · 끝까지 (자기 시계로 0.1초마다만 다시 그림) */
@@ -237,7 +237,8 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
     setPlaying(false);abort.current=false;
     if(!rec.ready&&!(await rec.open()))return;
     const windows=dubWindows(cues,q);if(!windows.length)return;
-    const T0=windows[0].start;const from=Math.max(0,T0-optsRef.current.prep);
+    // 첫 문장처럼 영상 앞부분이 모자라면 시계를 0초보다 앞(음수)에서 시작한다: 그동안 첫 화면에 멈춰 카운트다운을 다 센다
+    const T0=windows[0].start;const from=T0-optsRef.current.prep;
     const startedAt=performance.now();
     picRef.current={queue:q,windows,from,startedAt,T0,recT0:null,pos:0,single,lastCount:-1};
     setSelectedCue(q[0]);setCont(single?null:{queue:q,pos:0});setClock({from,startedAt});setLive({clock:{from,startedAt},recStart:null,windows});setPhase('countdown');setCount(0);
