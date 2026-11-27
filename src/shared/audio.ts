@@ -35,3 +35,26 @@ export function waveformPeaks(samples:Float32Array,bins:number):number[]{
   for(let b=0;b<bins;b++){let p=0;const end=Math.min(samples.length,(b+1)*step);for(let i=b*step;i<end;i++){const a=Math.abs(samples[i]);if(a>p)p=a;}out.push(Math.min(1,p));}
   return out;
 }
+
+// ── 연속 녹음: 문장 사이에서 쉬면 자동으로 다음 문장으로 넘기기 ──
+export interface PauseOptions{/** 이보다 크면 목소리 */speechDb:number;/** 이보다 작으면 쉼 */silenceDb:number;/** 이만큼 말한 뒤에만 넘김(초) */minSpeech:number;/** 이만큼 쉬면 넘김(초) */pause:number}
+export const DEFAULT_PAUSE:PauseOptions={speechDb:-38,silenceDb:-45,minSpeech:.4,pause:1};
+export interface PauseState{t:number;speech:number;silenceStart:number|null}
+export const pauseStart=(t=0):PauseState=>({t,speech:0,silenceStart:null});
+/** 녹음 조각(길이 dt초, 크기 db) 하나를 넣는다. 말한 뒤 pause 초 이상 쉬면 split(나눌 시각, 초)을 돌려준다.
+ *  나누는 시각은 쉬기 시작한 때에서 조금 뒤(쉼의 앞쪽) — 앞 문장 끝 숨소리는 앞 녹음에, 나머지 쉼은 다음 녹음 앞에 들어가고 무음 자르기로 정리된다 */
+export function pauseStep(s:PauseState,db:number,dt:number,o:PauseOptions=DEFAULT_PAUSE):{state:PauseState;split:number|null}{
+  const t=s.t+dt;let {speech,silenceStart}=s;
+  if(db>=o.speechDb){speech+=dt;silenceStart=null;}
+  else if(db<o.silenceDb){if(silenceStart==null)silenceStart=s.t;}
+  else silenceStart=null; // 애매한 크기: 쉼으로 세지 않는다
+  if(speech>=o.minSpeech&&silenceStart!=null&&t-silenceStart>=o.pause){
+    const split=silenceStart+Math.min(.3,o.pause/2);return {state:pauseStart(t),split};
+  }
+  return {state:{t,speech,silenceStart},split:null};
+}
+/** 한 번에 녹음한 소리를 나눔 위치(샘플 번호)들로 자른다: marks = [0, m1, m2, …, 끝] */
+export function splitAtMarks(samples:Float32Array,marks:number[]):Float32Array[]{
+  const m=[...marks].map(x=>Math.max(0,Math.min(samples.length,Math.round(x)))).sort((a,b)=>a-b);
+  const out:Float32Array[]=[];for(let i=0;i<m.length-1;i++)out.push(samples.slice(m[i],m[i+1]));return out;
+}

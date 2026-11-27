@@ -217,3 +217,23 @@ export function motionCss(motion:string|undefined,strength:number|undefined,t:nu
 // ── BGM 덕킹 미리보기 ───────────────────────────────
 /** 목소리가 나오는 동안 배경음악 크기 배율 (ratio 6 ≈ 약 0.35배) */
 export function duckFactor(bgm:Bgm):number{const r=Math.max(1,Number(bgm.duck_ratio)||6);return round(Math.max(.15,1/Math.sqrt(r)*.85),3);}
+
+// ── 영상 보며 더빙: 자막 시간 기준으로 녹음 나누기 ─────────────────
+export interface DubWindow{index:number;start:number;end:number}
+/** 고른 문장마다 녹음을 잘라 낼 구간(타임라인 초). 이어지는 문장 사이는 두 문장 사이 가운데에서 나누고,
+ *  떨어진 문장은 앞 lead 초·뒤 tail 초 여유만 둔다(쉬는 동안의 소리는 버림). 한쪽으로 maxGap 초 넘게 늘리지 않는다 */
+export function dubWindows(cues:SubtitleItem[],queue:number[],{lead=.3,tail=.6,maxGap=1}:{lead?:number;tail?:number;maxGap?:number}={}):DubWindow[]{
+  const list=sortCues(cues.filter(c=>queue.includes(c.index)));
+  const cut=(a:SubtitleItem,b:SubtitleItem)=>b.start<=a.end?b.start:(a.end+b.start)/2;
+  return list.map((c,k)=>{const p=list[k-1],n=list[k+1];
+    const start=p?Math.max(cut(p,c),c.start-maxGap):c.start-lead;
+    const end=n?Math.min(cut(c,n),c.end+maxGap):c.end+tail;
+    return {index:c.index,start:round(Math.max(0,start)),end:round(Math.max(start+.1,end))};});
+}
+/** 영상 보며 녹음한 조각 → 녹음(take). 조각은 타임라인 fileStart 초에 시작한다. 말한 위치를 그대로 두므로 offset 은 화면 기준이고,
+ *  앞뒤 무음 자르기(voice)는 위치를 옮기지 않고 들리는 부분만 줄인다 */
+export function pictureTake(file:string,cue:SubtitleItem,fileStart:number,duration:number,voice?:{start:number;end:number}|null):DubbingTake{
+  const t:DubbingTake={file,subtitle:cue.index,offset:round(fileStart-cue.start),volume:1,duration:round(duration)};
+  if(voice){t.trim_start=round(Math.max(0,voice.start));t.trim_end=round(Math.min(duration,Math.max(voice.start+.05,voice.end)));}
+  return t;
+}

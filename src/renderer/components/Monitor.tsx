@@ -14,7 +14,7 @@ function useLead(file:string,isVideo:boolean){
   useEffect(()=>{if(!isVideo||leads.has(file))return;let dead=false;void window.compose.media.probe(file).then(i=>{leads.set(file,Number(i.lead)||0);if(!dead)setV(Number(i.lead)||0);}).catch(()=>{});return()=>{dead=true;};},[file,isVideo]);
   return v;
 }
-function SegmentLayer({doc,seg,urls,local,style,playing,visible}:{doc:ComposerProject;seg:Segment;urls:Record<string,string>;local:number;style:CSSProperties;playing:boolean;visible:boolean}){
+function SegmentLayer({doc,seg,urls,local,style,playing,visible,silent=false}:{doc:ComposerProject;seg:Segment;urls:Record<string,string>;local:number;style:CSSProperties;playing:boolean;visible:boolean;silent?:boolean}){
   const clip:Clip=doc.clips[seg.clips[0]];const ref=useRef<HTMLVideoElement>(null);
   const url=urls[seg.file];const poster=clip.poster?urls[clip.poster]:undefined;
   const lead=useLead(seg.file,seg.type==='video');
@@ -22,7 +22,7 @@ function SegmentLayer({doc,seg,urls,local,style,playing,visible}:{doc:ComposerPr
   const target=start+Math.max(0,local)*clipSpeed({...clip,trim_start:start});
   useEffect(()=>{const v=ref.current;if(!v)return;
     if(Math.abs(v.currentTime-target)>(playing&&visible?.35:.04)&&Number.isFinite(target)){try{v.currentTime=Math.max(0,target);}catch{/* 아직 못 읽음 */}}
-    v.playbackRate=Math.min(4,Math.max(.25,clipSpeed(clip)));v.muted=!playing||!visible||Boolean(clip.mute);v.volume=Math.min(1,Math.max(0,clip.volume==null?1:Number(clip.volume)));
+    v.playbackRate=Math.min(4,Math.max(.25,clipSpeed(clip)));v.muted=silent||!playing||!visible||Boolean(clip.mute);v.volume=Math.min(1,Math.max(0,clip.volume==null?1:Number(clip.volume)));
     const run=playing&&visible&&local>=0;if(run&&v.paused)void v.play().catch(()=>{});if(!run&&!v.paused)v.pause();
   });
   const fit=(clip.fit||'cover')==='contain'?'contain':'cover';
@@ -67,8 +67,13 @@ export function SubtitleOverlay({doc,cue,height}:{doc:ComposerProject;cue?:Subti
   return <div className="monitor-subtitle" style={{...pos}}><span style={{fontSize:size,color:String(st.color||'#fff'),textShadow:shadow,fontWeight:st.bold===false?500:700,fontFamily:`'${st.font||'Malgun Gothic'}','Malgun Gothic',sans-serif`,
     ...(st.box?{background:`color-mix(in srgb, ${String(st.box_color||'#000')} ${Math.round((Number(st.box_opacity??.6))*100)}%, transparent)`,padding:`${4*k*2}px ${12*k*2}px`,borderRadius:4}:{})}}>{cue.text}</span></div>;
 }
-export function Monitor({showTransport=true}:{showTransport?:boolean}){
-  const {doc,tracks,total,urls,playhead,seek,playing,setPlaying,cues}=useEditor();
+/** 미리보기 화면.
+ *  time·run 을 주면 편집 화면의 재생 위치 대신 그 시각을 보여 준다 (더빙 녹음: 이 화면만 다시 그려 녹음이 끊기지 않게).
+ *  silent 면 영상 원래 소리를 내지 않는다 (마이크에 들어가지 않게) */
+export function Monitor({showTransport=true,time,run,silent=false,subtitleCue}:{showTransport?:boolean;time?:number;run?:boolean;silent?:boolean;
+  /** 자막 대신 이 문장을 크게 강조해 보여 줌 (없으면 그 시각의 자막) */subtitleCue?:SubtitleItem|null}){
+  const ed=useEditor();const {doc,tracks,total,urls,seek,setPlaying,cues}=ed;
+  const playhead=time??ed.playhead;const playing=run??ed.playing;
   const [boxRef,box]=useElementSize<HTMLDivElement>();
   const W=doc.output.width||1920,H=doc.output.height||1080;
   const scale=Math.min(box.width/W,box.height/H)||0;const fw=Math.floor(W*scale),fh=Math.floor(H*scale);
@@ -85,13 +90,13 @@ export function Monitor({showTransport=true}:{showTransport?:boolean}){
     // 다음 구간을 미리 올려 두어(보이지 않게) 영상 첫 프레임이 늦게 나와 검게 깜박이지 않게 한다
     const nx=segs[si+1];if(nx&&nx.startFrame/fps-playhead<1.5)layers.push({seg:nx,style:{zIndex:0,opacity:0},visible:false});
   }
-  const cue=cues.find(c=>playhead>=c.start&&playhead<c.end);
+  const cue=subtitleCue===undefined?cues.find(c=>playhead>=c.start&&playhead<c.end):subtitleCue||undefined;
   const jump=(d:number)=>{const idx=Math.max(0,Math.min(tracks.length-1,cur+d));if(tracks[idx])seek(tracks[idx].start);};
   return <div className="monitor">
     <div className="monitor-stage" ref={boxRef}>
       <div className="monitor-frame" style={{width:fw,height:fh}}><ToneDefs/>
         {!tracks.length&&<div className="monitor-layer monitor-missing"><Film size={28}/><span>장면을 추가하면 여기에서 미리 볼 수 있어요</span></div>}
-        {layers.map(l=><SegmentLayer key={`seg-${l.seg.index}-${l.seg.file}`} doc={doc} seg={l.seg} urls={urls} local={playhead-l.seg.startFrame/fps} style={l.style} playing={playing} visible={l.visible}/>)}
+        {layers.map(l=><SegmentLayer key={`seg-${l.seg.index}-${l.seg.file}`} doc={doc} seg={l.seg} urls={urls} local={playhead-l.seg.startFrame/fps} style={l.style} playing={playing} visible={l.visible} silent={silent}/>)}
         {veil&&<div className="monitor-layer" style={{zIndex:4,...veil}}/>}
         <SubtitleOverlay doc={doc} cue={cue} height={fh}/>
       </div>
