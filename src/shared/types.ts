@@ -1,5 +1,5 @@
 export type ClipType='image'|'video';
-export type Transition={type:string;duration:number};
+export type Transition={type:string;duration:number;/** 창작실 표시용 전환 이름 */effect?:string};
 export interface Clip {
   file:string;type:ClipType;duration?:number|null;fit_duration?:number|null;trim_start?:number;trim_end?:number|null;speed?:number;mute?:boolean;volume?:number;label?:string;
   motion?:string;motion_strength?:number;look?:string;brightness?:number;contrast?:number;saturation?:number;transition?:Transition|null;
@@ -9,6 +9,12 @@ export interface Clip {
   scene_id?:string|null;
   /** 영상 장면의 기준 이미지(창작실 이미지→동영상). 썸네일·대체 화면·앞 장면 넣기에 쓴다 */
   poster?:string|null;
+  /** 창작실 효과 규격(gomo.effects.v1): 장면 안 샷 순서(0부터) */
+  shot_index?:number;
+  /** 초점 다가가기·물러나기의 목표 위치 (0~1, 왼쪽 위 기준) */
+  motion_focus?:{x:number;y:number}|null;
+  /** 분위기 효과 · 세기(0~1) · 색감 */
+  overlay?:string|null;overlay_strength?:number;tone?:string|null;
   [key:string]:unknown
 }
 export interface SubtitleItem {index:number;start:number;end:number;text:string;style?:Record<string,unknown>|null}
@@ -44,6 +50,8 @@ export interface AudioCue {
 export interface ComposerProject {
   version:number;title:string;clips:Clip[];output:{width:number;height:number;fps:number;fit:string;file:string;background?:string;[key:string]:unknown};
   transition:Transition;subtitle:Subtitle;bgm:Bgm;
+  /** 창작실 효과 규격 이름 (gomo.effects.v1) */
+  effects_spec?:string;
   dubbing:{folder?:string;takes:DubbingTake[];volume?:number;latency_ms?:number;[key:string]:unknown};tracks?:Record<string,unknown>;
   /** 미디어 보관함: 창작실 패키지에 들어 있는 모든 이미지·영상·음악 (편집실 확장 — 영상 합성기는 무시) */
   media_library?:MediaItem[];

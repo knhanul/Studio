@@ -170,7 +170,7 @@ export function fromCreatorHandoff(h:CreatorHandoff):ComposerProject{
     const s=scenes.find(x=>x.id===c.sceneId);if(!s||!s.asset)continue;
     const kind=mediaKind(s.asset);if(!kind)continue;
     const dur=Math.max(.5,Number(c.durationSec)||Number(s.durationSec)||DEFAULT_IMAGE_SECONDS);
-    const tr=c.transition==='cut'?'none':c.transition==='fade'?'fade':'crossfade';
+    const tr=c.transition==='cut'?'none':c.transition==='fade_black'?'fadeblack':'crossfade'; // 창작실 fade = 서서히 섞기
     const clip:Clip={file:s.asset,type:kind,label:s.title||'',transition:{type:tr,duration:tr==='none'?0:Math.min(.5,dur/4)},motion:kind==='image'?'zoom_in':'none',motion_strength:.08};
     if(kind==='image')clip.duration=dur;else{clip.fit_duration=dur;clip.mute=true;}
     p.clips.push(clip);
@@ -186,9 +186,11 @@ export function fromCreatorHandoff(h:CreatorHandoff):ComposerProject{
 // ── 미리보기 움직임 (렌더의 perspective 식과 같은 경로) ──────
 export const MOTIONS:{id:string;label:string}[]=[
   {id:'none',label:'움직임 없음'},{id:'zoom_in',label:'천천히 다가가기'},{id:'zoom_out',label:'천천히 멀어지기'},
-  {id:'pan_left',label:'왼쪽으로 흐르기'},{id:'pan_right',label:'오른쪽으로 흐르기'},{id:'pan_up',label:'위로 흐르기'},{id:'pan_down',label:'아래로 흐르기'},{id:'ken_burns',label:'대각선 다가가기'}
+  {id:'pan_left',label:'왼쪽으로 흐르기'},{id:'pan_right',label:'오른쪽으로 흐르기'},{id:'pan_up',label:'위로 흐르기'},{id:'pan_down',label:'아래로 흐르기'},{id:'ken_burns',label:'대각선 다가가기'},
+  {id:'static',label:'고정'},{id:'focus_in',label:'초점으로 다가가기'},{id:'focus_out',label:'초점에서 물러나기'},{id:'drift',label:'부드럽게 흐르기'}
 ];
-export const TRANSITIONS:{id:string;label:string}[]=[{id:'none',label:'바로 전환'},{id:'crossfade',label:'서서히 바뀜'},{id:'fade',label:'검은 화면 페이드'}];
+/** 편집실에서 고르는 전환. 'fade'는 예전 프로젝트의 「검은 화면 페이드」와 헷갈리므로 새로 쓸 때는 fadeblack 으로 적는다 */
+export const TRANSITIONS:{id:string;label:string}[]=[{id:'none',label:'바로 전환'},{id:'crossfade',label:'서서히 바뀜'},{id:'fadeblack',label:'검은 화면 페이드'}];
 export function easeProgress(t:number,linear=false){const x=clamp(t,0,1);return linear?x:(1-Math.cos(Math.PI*x))/2;}
 /** 확대 배율 z와 남는 공간 중 위치(fx, fy: 0~1) */
 export function motionState(motion:string|undefined,strength:number|undefined,t:number):{z:number;fx:number;fy:number}{

@@ -19,7 +19,7 @@ export const api={
     /** 작업 폴더를 다시 읽어 미디어 보관함 항목 (창작실 project.json + assets/ · media/ 파일) */
     library:():Promise<MediaItem[]>=>ipcRenderer.invoke('media:library'),
     urls:(paths:string[]):Promise<Record<string,string>>=>ipcRenderer.invoke('media:urls',paths),
-    probe:(file:string):Promise<{duration:number|null;hasAudio:boolean}>=>ipcRenderer.invoke('media:probe',file)
+    probe:(file:string):Promise<{duration:number|null;hasAudio:boolean;lead?:number}>=>ipcRenderer.invoke('media:probe',file)
   },
   take:{
     save:(cue:number|null,data:ArrayBuffer):Promise<string>=>ipcRenderer.invoke('take:save',cue,data),

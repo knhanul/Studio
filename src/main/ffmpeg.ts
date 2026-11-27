@@ -5,7 +5,7 @@ import {mkdir,mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type {ComposerProject,FfmpegStatus} from '../shared/types';
-import {buildRenderPlan,parseMediaInfo,parseProgressSeconds,type MediaInfo} from '../shared/render';
+import {buildRenderPlan,leadFromStats,parseMediaInfo,parseProgressSeconds,type MediaInfo} from '../shared/render';
 import {musicLayers} from '../shared/media';
 
 function bundledPath():string{
@@ -41,6 +41,16 @@ export async function probeMedia(ffmpeg:string,file:string):Promise<MediaInfo>{
     p.on('close',()=>resolve(parseMediaInfo(err)));
   });
 }
+/** 영상 앞부분 검은 프레임 길이(초): 처음 0.6초 동안 밝기를 재서, 첫 프레임이 검고 뒤에 밝은 프레임이 있으면 그 앞까지.
+ *  (키프레임이 늦게 나와 첫 프레임이 비는 영상도 같은 방식으로 걸러진다) */
+export async function probeLead(ffmpeg:string,file:string):Promise<number>{
+  return new Promise(resolve=>{
+    const p=spawn(ffmpeg,['-hide_banner','-nostdin','-t','0.6','-i',file,'-an','-vf','scale=64:36,signalstats,metadata=print:key=lavfi.signalstats.YAVG','-f','null','-'],{windowsHide:true});let err='';
+    p.stderr.setEncoding('utf8');p.stderr.on('data',(d:string)=>{err+=d;});
+    p.on('error',()=>resolve(0));
+    p.on('close',()=>resolve(leadFromStats(err)));
+  });
+}
 export interface RunOptions{cwd?:string;duration?:number;onProgress?:(fraction:number)=>void;signal?:AbortSignal}
 export function runFfmpeg(ffmpeg:string,args:string[],o:RunOptions={}):Promise<void>{
   return new Promise((resolve,reject)=>{
@@ -58,7 +68,7 @@ export function runFfmpeg(ffmpeg:string,args:string[],o:RunOptions={}):Promise<v
 }
 export interface RenderJobOptions{ffmpeg:string;baseDir:string;output:string;draft:boolean;onProgress?:(fraction:number,message:string)=>void;signal?:AbortSignal;keepWork?:boolean}
 /** 프로젝트 → MP4. 진행률 0~1 */
-export async function renderProject(project:ComposerProject,o:RenderJobOptions):Promise<{output:string;duration:number;bytes:number}>{
+export async function renderProject(project:ComposerProject,o:RenderJobOptions):Promise<{output:string;duration:number;bytes:number;ignored:string[]}>{
   const work=await mkdtemp(path.join(os.tmpdir(),'gomo-render-'));
   try{
     const resolve=(rel:string)=>path.resolve(o.baseDir,rel);
@@ -70,8 +80,10 @@ export async function renderProject(project:ComposerProject,o:RenderJobOptions):
     o.onProgress?.(0,'미디어 정보를 읽는 중');
     const info=new Map<string,MediaInfo>();
     for(const f of files)info.set(f,await probeMedia(o.ffmpeg,f));
+    for(const c of project.clips)if(c.type==='video'){const f=resolve(c.file);const i=info.get(f);if(i&&i.lead==null)i.lead=await probeLead(o.ffmpeg,f);}
     const fontsDir=process.platform==='win32'?path.join(process.env.WINDIR||'C:\\Windows','Fonts'):undefined;
     const plan=buildRenderPlan(project,{draft:o.draft,resolve,info:f=>info.get(f),workFile:n=>path.join(work,n),output:o.output,fontsDir});
+    if(plan.ignored.length)console.warn(`[고모 편집실] 아직 지원하지 않아 무시한 효과: ${plan.ignored.join(', ')}`);
     if(plan.ass)await writeFile(path.join(work,'subs.ass'),'\uFEFF'+plan.ass,'utf8');
     await mkdir(path.dirname(o.output),{recursive:true});
     const clipTotal=plan.clipJobs.reduce((n,j)=>n+j.duration,0)||1;
@@ -84,6 +96,6 @@ export async function renderProject(project:ComposerProject,o:RenderJobOptions):
     await runFfmpeg(o.ffmpeg,plan.assembly.args,{cwd:work,duration:plan.total,signal:o.signal,onProgress:fr=>o.onProgress?.(W+(1-W)*fr,'장면 잇기 · 자막 · 소리 섞는 중')});
     const st=await stat(o.output);
     o.onProgress?.(1,'완료');
-    return {output:o.output,duration:plan.total,bytes:st.size};
+    return {output:o.output,duration:plan.total,bytes:st.size,ignored:plan.ignored};
   }finally{if(!o.keepWork)await rm(work,{recursive:true,force:true}).catch(()=>{});}
 }

@@ -4,11 +4,13 @@
  *  2) 전환(xfade/acrossfade)으로 잇고 자막(ASS)·더빙·배경음악(덕킹)을 섞어 MP4
  *  이미지 움직임은 perspective 필터의 소수점 좌표를 써서 떨림이 없다. */
 import type {ComposerProject,SubtitleItem} from './types';
-import {clipDuration,clipSpeed,projectCues,takePosition,transitionInto} from './project';
+import {clipDuration,clipSpeed,projectCues,takePosition} from './project';
+import {buildSegments,ignoredEffects,resolveTransition,splineExpr,toneMatrix,type Segment} from './camera';
 import {musicLayers} from './media';
 
 export const AUDIO_RATE=48000;
-export interface MediaInfo{duration:number|null;hasAudio:boolean}
+export interface MediaInfo{duration:number|null;hasAudio:boolean;
+  /** 앞에서 잘라 낼 검은(또는 늦게 나오는) 첫 프레임 구간(초) */lead?:number}
 export interface RenderOptions{
   draft:boolean;
   /** 프로젝트 기준 상대 경로 → 절대 경로 */
@@ -22,7 +24,8 @@ export interface RenderOptions{
   fontsDir?:string;
 }
 export interface ClipJob{index:number;args:string[];output:string;duration:number}
-export interface RenderPlan{size:{w:number;h:number};fps:number;total:number;clipJobs:ClipJob[];assembly:{args:string[];graph:string};ass:string|null}
+export interface RenderPlan{size:{w:number;h:number};fps:number;total:number;clipJobs:ClipJob[];assembly:{args:string[];graph:string};ass:string|null;
+  /** 아직 구현하지 않아 무시한 효과 필드 (로그용) */ignored:string[]}
 
 export const f=(v:number)=>{const s=(Math.round(v*1e6)/1e6).toFixed(6).replace(/0+$/,'').replace(/\.$/,'');return s==='-0'?'0':s;};
 const even=(n:number)=>Math.max(2,Math.round(n/2)*2);
@@ -55,12 +58,12 @@ export function motionFilter(motion:string,strength:number,frames:number):string
 }
 export function encoderArgs(draft:boolean,stage:'intermediate'|'final',fps:number):string[]{
   const gop=String(Math.max(1,Math.round(fps*2)));
-  if(draft)return ['-c:v','libx264','-preset','ultrafast','-crf','28','-g',gop,'-pix_fmt','yuv420p'];
+  if(draft)return ['-c:v','libx264','-preset','veryfast','-crf','24','-g',gop,'-pix_fmt','yuv420p'];
   if(stage==='intermediate')return ['-c:v','libx264','-preset','veryfast','-crf','14','-g',gop,'-pix_fmt','yuv420p'];
   return ['-c:v','libx264','-preset','medium','-crf','18','-g',gop,'-pix_fmt','yuv420p'];
 }
-const XFADE:Record<string,string>={fade:'fadeblack',crossfade:'fade'};
-export const xfadeName=(type:string)=>XFADE[type]||type;
+/** 예전 이름 호환 — 실제 규칙은 camera.ts resolveTransition */
+export const xfadeName=(type:string)=>resolveTransition(type,false);
 
 // ── 자막 ASS ──
 export function assColor(hex:string|undefined,alpha=0):string{
@@ -85,23 +88,47 @@ export function buildAss(p:ComposerProject,cues:SubtitleItem[],w:number,h:number
     `Style: ${style}`,'','[Events]','Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',...lines,''].join('\n');
 }
 
-// ── 1단계: 장면 중간 파일 ──
-export function buildClipJobs(p:ComposerProject,o:RenderOptions):ClipJob[]{
+// ── 1단계: 장면 구간 중간 파일 ──
+/** 카메라 경로 → perspective 필터 (원본을 키운 뒤 소수점 좌표로 잘라 내므로 떨림이 없다) */
+export function cameraFilter(seg:Segment,fps:number):string|null{
+  const cam=seg.camera;
+  if(cam.kind==='static')return null;
+  if(cam.kind==='legacy'&&cam.legacy)return motionFilter(cam.legacy.motion,cam.legacy.strength,Math.max(1,seg.renderFrames));
+  const T=`(in/${f(fps)})`;
+  const Z=`(${splineExpr(cam.z,T)})`;
+  const cxs=splineExpr(cam.cx,T),cys=splineExpr(cam.cy,T);
+  const X=`(clip(${cxs},0.5/${Z},1-0.5/${Z})-0.5/${Z})`,Y=`(clip(${cys},0.5/${Z},1-0.5/${Z})-0.5/${Z})`;
+  const q={x0:`W*${X}`,y0:`H*${Y}`,x1:`W*(${X}+1/${Z})`,y1:`H*${Y}`,x2:`W*${X}`,y2:`H*(${Y}+1/${Z})`,x3:`W*(${X}+1/${Z})`,y3:`H*(${Y}+1/${Z})`};
+  return `perspective=${Object.entries(q).map(([k,v])=>`${k}='${v}'`).join(':')}:interpolation=cubic:sense=source:eval=frame`;
+}
+/** 색감·분위기 효과: 구간마다 xfade 전에 넣어 전환 동안 자연스럽게 섞이게 한다 */
+export function lookFilters(seg:Segment):string[]{
+  const out:string[]=[];const m=toneMatrix(seg.tone);
+  if(m){const k=['rr','rg','rb','gr','gg','gb','br','bg','bb'];out.push('format=gbrp',`colorchannelmixer=${k.map((n,i)=>`${n}=${f(m[i])}`).join(':')}`);}
+  if(seg.overlay==='vignette')out.push(`vignette=angle=${f(.3+.6*Math.max(0,Math.min(1,seg.overlayStrength)))}`);
+  return out;
+}
+export function buildClipJobs(p:ComposerProject,o:RenderOptions,segments:Segment[]=buildSegments(p)):ClipJob[]{
   const {w,h}=renderSize(p,o.draft);const fps=Number(p.output.fps)||30;const fs=f(fps);const up=o.draft?1:2;
-  return p.clips.map((clip,i)=>{
-    const dur=clipDuration(clip);const handle=transitionInto(p,i+1).duration; // 다음 장면과 겹칠 여분
-    const len=dur+handle;const ls=f(len);const src=o.resolve(clip.file);const out=o.workFile(`clip_${String(i).padStart(3,'0')}.mkv`);
+  return segments.map(seg=>{
+    const clip=p.clips[seg.clips[0]];
+    const N=Math.max(1,seg.renderFrames);const len=N/fps;const ls=f(len);const src=o.resolve(seg.file);const out=o.workFile(`clip_${String(seg.index).padStart(3,'0')}.mkv`);
     const fit=String(clip.fit||p.output.fit||'cover');const bg=String(p.output.background||'#000000');
     const args=['-hide_banner','-y','-nostdin'];let vf:string[];let useAudio=false;
     const eq=[clip.brightness,clip.contrast,clip.saturation].some(v=>v!=null&&v!==0&&v!==1)?[`eq=brightness=${f(Number(clip.brightness)||0)}:contrast=${f(clip.contrast==null?1:Number(clip.contrast))}:saturation=${f(clip.saturation==null?1:Number(clip.saturation))}`]:[];
-    if(clip.type==='image'){
-      args.push('-loop','1','-framerate',fs,'-t',ls,'-i',src);
-      const mf=motionFilter(String(clip.motion||'none'),Number(clip.motion_strength??.15),Math.max(1,Math.round(len*fps)));
+    const look=[...eq,...lookFilters(seg)];
+    // 모든 구간 공통 끝맺음: 같은 크기·SAR·픽셀 형식·fps, 프레임 수를 정확히 N개로
+    const tail=[...look,'setsar=1','format=yuv420p',`tpad=stop_mode=clone:stop=-1`,`trim=end_frame=${N}`,'setpts=N/FRAME_RATE/TB'];
+    if(seg.type==='image'){
+      args.push('-loop','1','-framerate',fs,'-t',f(len+2/fps),'-i',src);
+      const mf=cameraFilter(seg,fps);
       vf=mf?[...fitFilters(fit,w*up,h*up,bg),'format=yuv444p',mf,...(up>1?[`scale=${w}:${h}:flags=lanczos`]:[]),`fps=${fs}`]:[...fitFilters(fit,w,h,bg),`fps=${fs}`];
     }else{
-      const info=o.info(src);const start=Number(clip.trim_start)||0;
+      const info=o.info(src);
+      // 첫 프레임이 검거나 늦게 나오는 영상: 앞을 조금 잘라 내고 다시 인코딩 (사용자가 시작점을 정했으면 그대로)
+      const start=Number(clip.trim_start)>0?Number(clip.trim_start):Math.min(.5,Math.max(0,Number(info?.lead)||0));
       const end=clip.trim_end!=null?Number(clip.trim_end):(info?.duration??(typeof clip.source_duration==='number'?clip.source_duration:null));
-      const speed=clipSpeed({...clip,source_duration:info?.duration??clip.source_duration});
+      const speed=clipSpeed({...clip,trim_start:start,source_duration:info?.duration??clip.source_duration});
       if(start>0)args.push('-ss',f(start));
       if(end!=null)args.push('-t',f(Math.max(.1,end-start)));
       args.push('-i',src);
@@ -110,32 +137,33 @@ export function buildClipJobs(p:ComposerProject,o:RenderOptions):ClipJob[]{
       if(useAudio){
         const af=['asetpts=PTS-STARTPTS',...atempoChain(speed),`aresample=${AUDIO_RATE}`,'aformat=sample_fmts=fltp:channel_layouts=stereo',
           ...(clip.volume!=null&&Math.abs(Number(clip.volume)-1)>1e-6?[`volume=${f(Number(clip.volume))}`]:[]),`apad=whole_dur=${ls}`,`atrim=duration=${ls}`];
-        vf.push(...eq,'setsar=1','format=yuv420p',`tpad=stop_mode=clone:stop_duration=${ls}`,`trim=duration=${ls}`,'setpts=PTS-STARTPTS');
+        vf.push(...tail);
         args.push('-filter_complex',`[0:v]${vf.join(',')}[v];[0:a]${af.join(',')}[a]`,'-map','[v]','-map','[a]');
       }
     }
     if(!useAudio){
-      vf.push(...eq,'setsar=1','format=yuv420p',`tpad=stop_mode=clone:stop_duration=${ls}`,`trim=duration=${ls}`,'setpts=PTS-STARTPTS');
+      vf.push(...tail);
       args.push('-f','lavfi','-t',ls,'-i',`anullsrc=r=${AUDIO_RATE}:cl=stereo`,'-filter_complex',`[0:v]${vf.join(',')}[v]`,'-map','[v]','-map','1:a');
     }
-    args.push(...encoderArgs(o.draft,'intermediate',fps),'-r',fs,'-c:a','pcm_s16le','-ar',String(AUDIO_RATE),'-ac','2','-t',ls,'-progress','pipe:1','-nostats',out);
-    return {index:i,args,output:out,duration:len};
+    args.push(...encoderArgs(o.draft,'intermediate',fps),'-r',fs,'-frames:v',String(N),'-c:a','pcm_s16le','-ar',String(AUDIO_RATE),'-ac','2','-t',ls,'-progress','pipe:1','-nostats',out);
+    return {index:seg.index,args,output:out,duration:len};
   });
 }
 
 // ── 2단계: 조립 ──
-export function buildAssembly(p:ComposerProject,o:RenderOptions,clipFiles:string[],assName:string|null):{args:string[];graph:string;total:number}{
+export function buildAssembly(p:ComposerProject,o:RenderOptions,clipFiles:string[],assName:string|null,segments:Segment[]=buildSegments(p)):{args:string[];graph:string;total:number}{
   const fps=Number(p.output.fps)||30;const fs=f(fps);
-  const total=p.clips.reduce((n,c)=>n+clipDuration(c),0);const ts=f(total);
+  const totalFrames=Math.round(p.clips.reduce((n,c)=>n+clipDuration(c),0)*fps);const total=totalFrames/fps;const ts=f(total);
   const args=['-hide_banner','-y','-nostdin'];const g:string[]=[];
   clipFiles.forEach(file=>args.push('-i',file));
   const n=clipFiles.length;
   for(let i=0;i<n;i++){g.push(`[${i}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=${fs}[v${i}]`);g.push(`[${i}:a]asetpts=PTS-STARTPTS[a${i}]`);}
-  let cv='v0',ca='a0',start=0;
+  // 구간 사이만 섞는다. offset = 구간 시작 프레임 / fps (프레임 단위라 오차가 쌓이지 않음)
+  let cv='v0',ca='a0';
   for(let i=1;i<n;i++){
-    start+=clipDuration(p.clips[i-1]);const tr=transitionInto(p,i);const nv=`vx${i}`,na=`ax${i}`;
-    if(tr.duration<=0){g.push(`[${cv}][${ca}][v${i}][a${i}]concat=n=2:v=1:a=1[${nv}c][${na}]`);g.push(`[${nv}c]fps=${fs}[${nv}]`);}
-    else{g.push(`[${cv}][v${i}]xfade=transition=${xfadeName(tr.type)}:duration=${f(tr.duration)}:offset=${f(start)}[${nv}]`);g.push(`[${ca}][a${i}]acrossfade=d=${f(tr.duration)}:c1=tri:c2=tri[${na}]`);}
+    const seg=segments[i];const tr=seg.transition;const nv=`vx${i}`,na=`ax${i}`;
+    if(tr.frames<=0){g.push(`[${cv}][${ca}][v${i}][a${i}]concat=n=2:v=1:a=1[${nv}][${na}]`);}
+    else{g.push(`[${cv}][v${i}]xfade=transition=${tr.type}:duration=${f(tr.frames/fps)}:offset=${f(seg.startFrame/fps)}[${nv}]`);g.push(`[${ca}][a${i}]acrossfade=d=${f(tr.frames/fps)}:c1=tri:c2=tri[${na}]`);}
     cv=nv;ca=na;
   }
   let vlast=cv;
@@ -143,7 +171,7 @@ export function buildAssembly(p:ComposerProject,o:RenderOptions,clipFiles:string
   const fin=Number(p.output.fade_in)||0,fout=Number(p.output.fade_out)||0;
   const fv=[...(fin>0?[`fade=t=in:st=0:d=${f(fin)}`]:[]),...(fout>0?[`fade=t=out:st=${f(Math.max(0,total-fout))}:d=${f(fout)}`]:[])];
   const fa=[...(fin>0?[`afade=t=in:st=0:d=${f(fin)}`]:[]),...(fout>0?[`afade=t=out:st=${f(Math.max(0,total-fout))}:d=${f(fout)}`]:[])];
-  g.push(`[${vlast}]${[...fv,'format=yuv420p'].join(',')}[vout]`);
+  g.push(`[${vlast}]${[...fv,'format=yuv420p',`trim=end_frame=${totalFrames}`].join(',')}[vout]`);
   // 오디오
   let idx=n;g.push(`[${ca}]volume=${f(Number(p.output.original_volume??1))}[abase]`);const mix=['[abase]'];
   const cues=projectCues(p);const latency=Number(p.dubbing.latency_ms)||0;const dv=Number(p.dubbing.volume??1);
@@ -187,7 +215,7 @@ export function buildAssembly(p:ComposerProject,o:RenderOptions,clipFiles:string
   if(mix.length>1)g.push(`${mix.join('')}amix=inputs=${mix.length}:normalize=0:duration=first:dropout_transition=0,alimiter=limit=0.97:level=0,atrim=duration=${ts}${afs}[aout]`);
   else g.push(`[abase]atrim=duration=${ts}${afs}[aout]`);
   const graph=g.join(';');
-  args.push('-filter_complex',graph,'-map','[vout]','-map','[aout]',...encoderArgs(o.draft,'final',fps),'-r',fs,'-c:a','aac','-b:a',o.draft?'128k':'192k','-ar',String(AUDIO_RATE),'-t',ts,'-movflags','+faststart','-progress','pipe:1','-nostats',o.output);
+  args.push('-filter_complex',graph,'-map','[vout]','-map','[aout]',...encoderArgs(o.draft,'final',fps),'-r',fs,'-frames:v',String(totalFrames),'-c:a','aac','-b:a',o.draft?'128k':'192k','-ar',String(AUDIO_RATE),'-t',ts,'-movflags','+faststart','-progress','pipe:1','-nostats',o.output);
   return {args,graph,total};
 }
 
@@ -196,9 +224,10 @@ export function buildRenderPlan(p:ComposerProject,o:RenderOptions):RenderPlan{
   const size=renderSize(p,o.draft);const cues=projectCues(p);
   const burn=p.subtitle.burn_in!==false&&cues.some(c=>c.text.trim());
   const ass=burn?buildAss(p,cues,size.w,size.h):null;
-  const clipJobs=buildClipJobs(p,o);
-  const assembly=buildAssembly(p,o,clipJobs.map(j=>j.output),ass?'subs.ass':null);
-  return {size:{w:size.w,h:size.h},fps:Number(p.output.fps)||30,total:assembly.total,clipJobs,assembly:{args:assembly.args,graph:assembly.graph},ass};
+  const segments=buildSegments(p);
+  const clipJobs=buildClipJobs(p,o,segments);
+  const assembly=buildAssembly(p,o,clipJobs.map(j=>j.output),ass?'subs.ass':null,segments);
+  return {size:{w:size.w,h:size.h},fps:Number(p.output.fps)||30,total:assembly.total,clipJobs,assembly:{args:assembly.args,graph:assembly.graph},ass,ignored:ignoredEffects(p)};
 }
 /** -progress pipe:1 출력에서 진행 시간(초) */
 export function parseProgressSeconds(chunk:string):number|null{
@@ -209,4 +238,13 @@ export function parseMediaInfo(stderr:string):MediaInfo{
   const m=stderr.match(/Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)/);
   const duration=m?(+m[1])*3600+(+m[2])*60+parseFloat(m[3]):null;
   return {duration,hasAudio:/Stream #\d+:\d+(?:\[[^\]]*\])?(?:\([^)]*\))?: Audio:/.test(stderr)};
+}
+
+/** signalstats YAVG 출력 → 앞에서 잘라 낼 검은 첫 프레임 구간(초, 최대 0.5) */
+export function leadFromStats(text:string):number{
+  const rows:{t:number;y:number}[]=[];let t=0;
+  for(const line of text.split('\n')){const m=line.match(/pts_time:([\d.]+)/);if(m)t=Number(m[1]);const y=line.match(/YAVG=([\d.]+)/);if(y)rows.push({t,y:Number(y[1])});}
+  if(rows.length<2||rows[0].y>=24)return 0;
+  const first=rows.findIndex(r=>r.y>=24);if(first<=0)return 0;
+  return Math.min(.5,Math.round((rows[first].t-rows[0].t)*1000)/1000);
 }

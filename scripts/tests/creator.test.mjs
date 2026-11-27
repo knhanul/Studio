@@ -6,7 +6,7 @@ const handoff={schema:'creator.handoff.v1',title:'토끼와 거북이',output:{r
   media:[{id:'m1',kind:'audio',path:'assets/audio/BGM_01.mp3'}]};
 await test('detects creator handoff',()=>{assert.ok(p.isCreatorHandoff(handoff));assert.ok(!p.isCreatorHandoff({version:2}));});
 await test('handoff converts to v2 project with scenes, subtitles, bgm, ratio',()=>{const x=p.fromCreatorHandoff(handoff);assert.equal(x.version,2);assert.equal(x.output.width,1080);assert.equal(x.output.height,1920);
-  assert.equal(x.clips.length,2,'scene without media skipped');assert.equal(x.clips[0].type,'image');assert.equal(x.clips[0].duration,5);assert.equal(x.clips[0].transition.type,'fade');
+  assert.equal(x.clips.length,2,'scene without media skipped');assert.equal(x.clips[0].type,'image');assert.equal(x.clips[0].duration,5);assert.equal(x.clips[0].transition.type,'crossfade','창작실 fade = 서서히 섞기');
   assert.equal(x.clips[1].type,'video');assert.equal(x.clips[1].fit_duration,6);assert.equal(x.clips[1].mute,true);assert.equal(x.clips[1].transition.type,'none');
   assert.equal(x.subtitle.items.length,1,'empty narration skipped');assert.equal(x.subtitle.items[0].text,'옛날 옛적에');assert.equal(x.bgm.file,'assets/audio/BGM_01.mp3');});
 await test('handoff without assembly falls back to scene order',()=>{const x=p.fromCreatorHandoff({...handoff,assembly:undefined});assert.equal(x.clips.length,2);assert.equal(x.bgm.file,null);});

@@ -1,11 +1,11 @@
-import {app,BrowserWindow,dialog,ipcMain,protocol,net,session,shell} from 'electron';
+import {app,BrowserWindow,dialog,ipcMain,protocol,session,shell} from 'electron';
 import {readFile,writeFile,mkdir,copyFile,readdir,rename,stat} from 'node:fs/promises';
-import {existsSync,readFileSync} from 'node:fs';
+import {createReadStream,existsSync,readFileSync} from 'node:fs';
+import {Readable} from 'node:stream';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
-import {pathToFileURL} from 'node:url';
 import {EngineController,EngineConfig} from './engine';
-import {probeMedia,renderProject,resolveFfmpeg} from './ffmpeg';
+import {probeLead,probeMedia,renderProject,resolveFfmpeg} from './ffmpeg';
 import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,normalizeProject,toSrt} from '../shared/project';
 import {attachLibrary,fromCreatorProject,isCreatorProject,libraryFromCreator,libraryFromFiles,librarySummary,type CreatorProject} from '../shared/media';
 import type {ComposerProject,FfmpegStatus,MediaItem,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
@@ -148,7 +148,8 @@ function registerIpc(){
   });
   ipcMain.handle('media:urls',(_e,files:string[])=>{const out:Record<string,string>={};for(const file of files){out[file]=mediaUrl(file);}return out;});
   ipcMain.handle('media:library',async()=>{ensureProject();return buildLibrary(dir());});
-  ipcMain.handle('media:probe',async(_e,file:string)=>{const st=ffmpeg();if(!st.ok)return {duration:null,hasAudio:false};return probeMedia(st.path,path.resolve(dir(),file));});
+  ipcMain.handle('media:probe',async(_e,file:string)=>{const st=ffmpeg();if(!st.ok)return {duration:null,hasAudio:false,lead:0};const f=path.resolve(dir(),file);const info=await probeMedia(st.path,f);
+    return {...info,lead:kindOf(f)==='video'?await probeLead(st.path,f):0};});
   ipcMain.handle('take:save',async(_e,cue:number|null,data:ArrayBuffer)=>{ensureProject();const folder=path.join(dir(),'takes');const name=await uniqueName(folder,cue?`line_${String(cue).padStart(4,'0')}_v`:'free_v','wav');await writeFile(path.join(folder,name),Buffer.from(data));return `takes/${name}`;});
   ipcMain.handle('take:import',async(_e,cue:number)=>{ensureProject();const r=await dialog.showOpenDialog(win!,{title:'녹음해 둔 음성 파일 선택',properties:['openFile'],filters:[{name:'오디오',extensions:AUDIO}]});if(r.canceled)return null;const src=r.filePaths[0];const folder=path.join(dir(),'takes');const name=await uniqueName(folder,`line_${String(cue).padStart(4,'0')}_file_v`,extOf(src)||'wav');await copyFile(src,path.join(folder,name));const rel=`takes/${name}`;const duration=ffmpeg().ok?(await probeMedia(ffmpeg().path,path.join(folder,name))).duration:null;return {file:rel,duration};});
   ipcMain.handle('subtitle:saveSrt',async(_e,items:SubtitleItem[])=>{const r=await dialog.showSaveDialog(win!,{defaultPath:path.join(dir(),'captions.srt'),filters:[{name:'SubRip',extensions:['srt']}]});if(r.canceled||!r.filePath)return null;await writeFile(r.filePath,toSrt(items),'utf8');return r.filePath;});
@@ -165,7 +166,7 @@ function registerIpc(){
     renderAbort=new AbortController();const signal=renderAbort.signal;
     send({phase:'progress',progress:0,message:'준비 중'});
     void renderProject(doc,{ffmpeg:st.path,baseDir:base,output,draft,signal,onProgress:(progress,message)=>send({phase:'progress',progress,message})})
-      .then(r=>send({phase:'done',progress:1,message:`완료 · ${Math.round(r.duration*10)/10}초 · ${(r.bytes/1048576).toFixed(1)}MB`,output:r.output}))
+      .then(r=>send({phase:'done',progress:1,message:`완료 · ${Math.round(r.duration*10)/10}초 · ${(r.bytes/1048576).toFixed(1)}MB${r.ignored.length?` · 아직 지원하지 않아 뺀 효과: ${r.ignored.join(', ')}`:''}`,output:r.output}))
       .catch((e:Error)=>send(signal.aborted?{phase:'cancelled',progress:0,message:'만들기를 취소했어요.'}:{phase:'error',progress:0,message:e.message}))
       .finally(()=>{renderAbort=null;});
     return {output};
@@ -182,6 +183,18 @@ function registerIpc(){
   ipcMain.handle('engine:action',async(_e,action:string,args:Record<string,unknown>={})=>{if(!['ping','devices','validate','render','cancel'].includes(action))throw new Error('허용되지 않은 엔진 명령');return engine.request(action,{...args,base_dir:dir(),project_path:currentPath},action==='render'?24*3600*1000:120000);});
   ipcMain.handle('app:info',()=>({version:app.getVersion(),projectDir:dir(),userData:app.getPath('userData')}));
 }
+const MIME:Record<string,string>={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',gif:'image/gif',bmp:'image/bmp',mp4:'video/mp4',m4v:'video/mp4',mov:'video/quicktime',webm:'video/webm',mkv:'video/x-matroska',
+  mp3:'audio/mpeg',wav:'audio/wav',m4a:'audio/mp4',aac:'audio/aac',flac:'audio/flac',ogg:'audio/ogg'};
+/** 미디어 파일 응답 — Range 요청(206)을 지원해야 <video>가 원하는 위치로 이동(seek)할 수 있다 */
+async function serveFile(file:string,range:string|null):Promise<Response>{
+  const size=(await stat(file)).size;const type=MIME[extOf(file)]||'application/octet-stream';
+  const m=range?/bytes=(\d*)-(\d*)/.exec(range):null;
+  if(!m||(!m[1]&&!m[2])){const body=Readable.toWeb(createReadStream(file)) as unknown as ReadableStream;return new Response(body,{status:200,headers:{'Content-Type':type,'Content-Length':String(size),'Accept-Ranges':'bytes'}});}
+  let start=m[1]?Number(m[1]):Math.max(0,size-Number(m[2]));let end=m[1]&&m[2]?Number(m[2]):size-1;end=Math.min(end,size-1);
+  if(start>end||start>=size)return new Response(null,{status:416,headers:{'Content-Range':`bytes */${size}`}});
+  const body=Readable.toWeb(createReadStream(file,{start,end})) as unknown as ReadableStream;
+  return new Response(body,{status:206,headers:{'Content-Type':type,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${size}`,'Accept-Ranges':'bytes'}});
+}
 function createWindow(){win=new BrowserWindow({width:1536,height:950,minWidth:1180,minHeight:720,backgroundColor:'#F8FAFC',title:'고모 편집실',icon:path.join(__dirname,'../../resources/app.png'),autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'../preload/index.js'),nodeIntegration:false,contextIsolation:true,sandbox:false}});win.on('closed',()=>win=null);if(!app.isPackaged&&process.env.ELECTRON_RENDERER_URL){void win.loadURL(process.env.ELECTRON_RENDERER_URL);}else void win.loadFile(path.join(__dirname,'../renderer/index.html'));}
 app.whenReady().then(async()=>{
   try{config=JSON.parse(readFileSync(configPath(),'utf8')) as EngineConfig;}catch{config={repo:'',python:''};}engine.setConfig(config);
@@ -189,7 +202,7 @@ app.whenReady().then(async()=>{
   // 마이크 녹음 허용 (이 앱 화면에서만)
   session.defaultSession.setPermissionRequestHandler((_wc,permission,cb)=>cb(permission==='media'));
   session.defaultSession.setPermissionCheckHandler((_wc,permission)=>permission==='media');
-  protocol.handle('gomo-media',async request=>{const id=new URL(request.url).pathname.split('/').filter(Boolean)[0];const file=mediaMap.get(id);if(!file||!existsSync(file))return new Response('Missing',{status:404});return net.fetch(pathToFileURL(file).toString(),{headers:request.headers});});
+  protocol.handle('gomo-media',async request=>{const id=new URL(request.url).pathname.split('/').filter(Boolean)[0];const file=mediaMap.get(id);if(!file||!existsSync(file))return new Response('Missing',{status:404});return serveFile(file,request.headers.get('range'));});
   registerIpc();createWindow();app.on('activate',()=>{if(!BrowserWindow.getAllWindows().length)createWindow();});
 });
 app.on('before-quit',()=>{renderAbort?.abort();engine.close();});app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
