@@ -2,6 +2,7 @@ import {useEffect,useMemo,useRef,useState,type CSSProperties} from 'react';
 import {ChevronFirst,ChevronLeft,ChevronRight,Film,Pause,Play} from 'lucide-react';
 import {clipSpeed,fmt} from '../../shared/project';
 import {buildSegments,cameraAt,TONES,toneMatrix,type Segment} from '../../shared/camera';
+import {drawOverlay,glowParams,overlayMode,overlaySize} from '../../shared/overlays';
 import type {Clip,ComposerProject,SubtitleItem} from '../../shared/types';
 import {useEditor} from '../editor';
 import {useElementSize} from '../hooks/useElementSize';
@@ -14,7 +15,7 @@ function useLead(file:string,isVideo:boolean){
   useEffect(()=>{if(!isVideo||leads.has(file))return;let dead=false;void window.compose.media.probe(file).then(i=>{leads.set(file,Number(i.lead)||0);if(!dead)setV(Number(i.lead)||0);}).catch(()=>{});return()=>{dead=true;};},[file,isVideo]);
   return v;
 }
-function SegmentLayer({doc,seg,urls,local,style,playing,visible,silent=false}:{doc:ComposerProject;seg:Segment;urls:Record<string,string>;local:number;style:CSSProperties;playing:boolean;visible:boolean;silent?:boolean}){
+function SegmentLayer({doc,seg,urls,local,style,playing,visible,silent=false,frameH=540}:{doc:ComposerProject;seg:Segment;urls:Record<string,string>;local:number;style:CSSProperties;playing:boolean;visible:boolean;silent?:boolean;frameH?:number}){
   const clip:Clip=doc.clips[seg.clips[0]];const ref=useRef<HTMLVideoElement>(null);
   const url=urls[seg.file];const poster=clip.poster?urls[clip.poster]:undefined;
   const lead=useLead(seg.file,seg.type==='video');
@@ -27,13 +28,28 @@ function SegmentLayer({doc,seg,urls,local,style,playing,visible,silent=false}:{d
   });
   const fit=(clip.fit||'cover')==='contain'?'contain':'cover';
   const tone=toneMatrix(seg.tone)?`url(#gomo-tone-${seg.tone})`:undefined;
-  const vignette=seg.overlay==='vignette'?<div className="monitor-vignette" style={{opacity:.35+.55*Math.max(0,Math.min(1,seg.overlayStrength))}}/>:null;
+  const fx=seg.overlay;const fps=Number(doc.output.fps)||30;
+  const vignette=<>{fx==='vignette'&&<div className="monitor-vignette" style={{opacity:.35+.55*Math.max(0,Math.min(1,seg.overlayStrength))}}/>}
+    {fx&&overlayMode(fx)!=='filter'&&overlayMode(fx)&&<OverlayCanvas kind={fx} strength={seg.overlayStrength} t={seg.startFrame/fps+Math.max(0,local)} aspect={(doc.output.width||1920)/(doc.output.height||1080)}/>}</>;
   if(!url&&poster)return <div className="monitor-layer" style={style}><img src={poster} alt="" draggable={false} style={{objectFit:fit,filter:tone}}/>{vignette}<span className="monitor-badge">영상 파일을 찾을 수 없어 기준 이미지를 보여 줘요</span></div>;
   if(!url)return <div className="monitor-layer monitor-missing" style={style}><Film size={26}/><span>{seg.file?'파일을 찾을 수 없어요':'미디어 없음'}</span></div>;
   if(seg.type==='video')return <div className="monitor-layer" style={style}><video ref={ref} src={url} poster={poster} preload="auto" playsInline style={{objectFit:fit,filter:tone}}/>{vignette}</div>;
   const c=cameraAt(seg.camera,Math.max(0,local));
   const transform=c.z===1&&c.cx===.5&&c.cy===.5?'none':`scale(${c.z.toFixed(5)}) translate(${(-(c.cx-.5/c.z)*100).toFixed(4)}%, ${(-(c.cy-.5/c.z)*100).toFixed(4)}%)`;
-  return <div className="monitor-layer" style={style}><img src={url} alt="" draggable={false} style={{objectFit:fit,transform,transformOrigin:'0 0',filter:tone}}/>{vignette}</div>;
+  // 빛 번짐: 같은 그림을 흐리게 한 장 더 겹쳐 screen 으로 (내보내기의 gblur + screen 과 같은 뜻)
+  const glow=fx==='glow'?glowParams(seg.overlayStrength,doc.output.height||1080):null;
+  return <div className="monitor-layer" style={style}><img src={url} alt="" draggable={false} style={{objectFit:fit,transform,transformOrigin:'0 0',filter:tone}}/>
+    {glow&&<img src={url} alt="" aria-hidden="true" draggable={false} className="monitor-glow" style={{objectFit:fit,transform,transformOrigin:'0 0',opacity:glow.opacity,filter:`${tone?tone+' ':''}blur(${(glow.sigma*frameH/Math.max(1,doc.output.height||1080)).toFixed(1)}px) brightness(${(1+glow.lift*3).toFixed(2)})`}}/>}
+    {vignette}</div>;
+}
+/** 빛·입자 효과 미리보기: 내보내기와 같은 drawOverlay 로 그린다 (작은 크기로 그려 화면에 맞게 늘림) */
+function OverlayCanvas({kind,strength,t,aspect}:{kind:string;strength:number;t:number;aspect:number}){
+  const ref=useRef<HTMLCanvasElement>(null);const size=overlaySize(kind,aspect,true);const img=useRef<ImageData|null>(null);
+  useEffect(()=>{const c=ref.current;if(!c||!size)return;const ctx=c.getContext('2d');if(!ctx)return;
+    if(!img.current||img.current.width!==size.w||img.current.height!==size.h)img.current=ctx.createImageData(size.w,size.h);
+    drawOverlay(kind,img.current.data,size.w,size.h,t,strength);ctx.putImageData(img.current,0,0);});
+  if(!size)return null;
+  return <canvas ref={ref} width={size.w} height={size.h} className={`monitor-overlay mode-${overlayMode(kind)}`} aria-hidden="true"/>;
 }
 /** 전환 한 프레임: 앞 구간(prev)·들어오는 구간(cur)의 모양. 내보내기의 xfade 이름과 같은 뜻 (a: 0→1) */
 function blend(type:string,a:number):{prev:CSSProperties;cur:CSSProperties;veil?:CSSProperties}{
@@ -96,7 +112,7 @@ export function Monitor({showTransport=true,time,run,silent=false,subtitleCue}:{
     <div className="monitor-stage" ref={boxRef}>
       <div className="monitor-frame" style={{width:fw,height:fh}}><ToneDefs/>
         {!tracks.length&&<div className="monitor-layer monitor-missing"><Film size={28}/><span>장면을 추가하면 여기에서 미리 볼 수 있어요</span></div>}
-        {layers.map(l=><SegmentLayer key={`seg-${l.seg.index}-${l.seg.file}`} doc={doc} seg={l.seg} urls={urls} local={playhead-l.seg.startFrame/fps} style={l.style} playing={playing} visible={l.visible} silent={silent}/>)}
+        {layers.map(l=><SegmentLayer key={`seg-${l.seg.index}-${l.seg.file}`} doc={doc} seg={l.seg} urls={urls} local={playhead-l.seg.startFrame/fps} style={l.style} playing={playing} visible={l.visible} silent={silent} frameH={fh}/>)}
         {veil&&<div className="monitor-layer" style={{zIndex:4,...veil}}/>}
         <SubtitleOverlay doc={doc} cue={cue} height={fh}/>
       </div>
