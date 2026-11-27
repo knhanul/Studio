@@ -10,7 +10,8 @@ import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,normalizeProje
 import {attachLibrary,fromCreatorProject,packageBgm,isCreatorProject,libraryFromCreator,libraryFromFiles,librarySummary,type CreatorProject} from '../shared/media';
 import type {ComposerProject,FfmpegStatus,MediaItem,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
 
-protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:true}}]);
+// corsEnabled + Access-Control-Allow-Origin: 화면(file:// 또는 개발 서버)에서 fetch()로 녹음·음악을 읽을 수 있게 (파형·들어 보기·미리듣기)
+protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:true,corsEnabled:true}}]);
 let win:BrowserWindow|null=null;
 let currentPath='';
 const mediaMap=new Map<string,string>();
@@ -194,14 +195,15 @@ function registerIpc(){
 const MIME:Record<string,string>={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',gif:'image/gif',bmp:'image/bmp',mp4:'video/mp4',m4v:'video/mp4',mov:'video/quicktime',webm:'video/webm',mkv:'video/x-matroska',
   mp3:'audio/mpeg',wav:'audio/wav',m4a:'audio/mp4',aac:'audio/aac',flac:'audio/flac',ogg:'audio/ogg'};
 /** 미디어 파일 응답 — Range 요청(206)을 지원해야 <video>가 원하는 위치로 이동(seek)할 수 있다 */
+const CORS={'Access-Control-Allow-Origin':'*'};
 async function serveFile(file:string,range:string|null):Promise<Response>{
   const size=(await stat(file)).size;const type=MIME[extOf(file)]||'application/octet-stream';
   const m=range?/bytes=(\d*)-(\d*)/.exec(range):null;
-  if(!m||(!m[1]&&!m[2])){const body=Readable.toWeb(createReadStream(file)) as unknown as ReadableStream;return new Response(body,{status:200,headers:{'Content-Type':type,'Content-Length':String(size),'Accept-Ranges':'bytes'}});}
+  if(!m||(!m[1]&&!m[2])){const body=Readable.toWeb(createReadStream(file)) as unknown as ReadableStream;return new Response(body,{status:200,headers:{...CORS,'Content-Type':type,'Content-Length':String(size),'Accept-Ranges':'bytes'}});}
   let start=m[1]?Number(m[1]):Math.max(0,size-Number(m[2]));let end=m[1]&&m[2]?Number(m[2]):size-1;end=Math.min(end,size-1);
-  if(start>end||start>=size)return new Response(null,{status:416,headers:{'Content-Range':`bytes */${size}`}});
+  if(start>end||start>=size)return new Response(null,{status:416,headers:{...CORS,'Content-Range':`bytes */${size}`}});
   const body=Readable.toWeb(createReadStream(file,{start,end})) as unknown as ReadableStream;
-  return new Response(body,{status:206,headers:{'Content-Type':type,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${size}`,'Accept-Ranges':'bytes'}});
+  return new Response(body,{status:206,headers:{...CORS,'Content-Type':type,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${size}`,'Accept-Ranges':'bytes'}});
 }
 function createWindow(){win=new BrowserWindow({width:1536,height:950,minWidth:1180,minHeight:720,backgroundColor:'#F8FAFC',title:'고모 편집실',icon:path.join(__dirname,'../../resources/app.png'),autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'../preload/index.js'),nodeIntegration:false,contextIsolation:true,sandbox:false}});win.on('closed',()=>win=null);if(!app.isPackaged&&process.env.ELECTRON_RENDERER_URL){void win.loadURL(process.env.ELECTRON_RENDERER_URL);}else void win.loadFile(path.join(__dirname,'../renderer/index.html'));}
 app.whenReady().then(async()=>{
@@ -210,7 +212,7 @@ app.whenReady().then(async()=>{
   // 마이크 녹음 허용 (이 앱 화면에서만)
   session.defaultSession.setPermissionRequestHandler((_wc,permission,cb)=>cb(permission==='media'));
   session.defaultSession.setPermissionCheckHandler((_wc,permission)=>permission==='media');
-  protocol.handle('gomo-media',async request=>{const id=new URL(request.url).pathname.split('/').filter(Boolean)[0];const file=mediaMap.get(id);if(!file||!existsSync(file))return new Response('Missing',{status:404});return serveFile(file,request.headers.get('range'));});
+  protocol.handle('gomo-media',async request=>{const id=new URL(request.url).pathname.split('/').filter(Boolean)[0];const file=mediaMap.get(id);if(!file||!existsSync(file))return new Response('Missing',{status:404,headers:CORS});return serveFile(file,request.headers.get('range'));});
   registerIpc();createWindow();app.on('activate',()=>{if(!BrowserWindow.getAllWindows().length)createWindow();});
 });
 app.on('before-quit',()=>{renderAbort?.abort();engine.close();});app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
