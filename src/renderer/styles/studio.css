@@ -410,3 +410,7 @@ body{min-width:1180px}
 .play-button:disabled{opacity:.45}
 .cue-list li.is-playing>button{background:var(--color-primary-soft);border-color:var(--color-primary);font-weight:700}
 .tag.tag-play{background:transparent;color:var(--color-primary);font-weight:700}
+/* 분위기 효과 미리보기 */
+.monitor-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2}
+.monitor-overlay.mode-screen{mix-blend-mode:screen}
+.monitor-glow{position:absolute;inset:0;width:100%;height:100%;display:block;mix-blend-mode:screen;pointer-events:none}

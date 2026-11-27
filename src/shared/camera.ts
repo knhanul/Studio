@@ -10,6 +10,7 @@
  *  모든 시각은 프레임 단위로 반올림해 오차가 쌓이지 않게 한다. */
 import type {Clip,ComposerProject} from './types';
 import {clipDuration,motionState} from './project';
+import {OVERLAY_KINDS} from './overlays';
 
 export const EFFECTS_SPEC='gomo.effects.v1';
 export interface Cam{z:number;cx:number;cy:number}
@@ -52,7 +53,7 @@ export const TONES:Record<string,number[]>={
 export const TONE_LABELS:Record<string,string>={none:'원본',warm:'따뜻하게',cool:'차갑게',golden:'황금빛',dusk:'해질녘',night:'밤',bright:'밝게',sepia:'세피아',mono:'흑백'};
 export const toneMatrix=(tone:unknown)=>typeof tone==='string'&&TONES[tone]?TONES[tone]:null;
 /** 지금 구현한 분위기 효과 (그 밖의 overlay 는 무시하고 기록) */
-export const OVERLAYS_SUPPORTED=new Set(['none','vignette']);
+export const OVERLAYS_SUPPORTED=new Set(['none',...OVERLAY_KINDS]);
 
 // ── 카메라 ──
 const clamp=(v:number,a:number,b:number)=>Math.min(b,Math.max(a,v));

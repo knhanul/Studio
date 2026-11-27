@@ -23,7 +23,7 @@ run(['-f','lavfi','-i','sine=f=660:d=2','-ar','44100',path.join(base,'assets','B
 run(['-f','lavfi','-i','sine=f=990:d=0.4','-ar','48000',path.join(base,'assets','ding.wav')]);
 const p=project.createProject('스모크');
 p.output={...p.output,width:640,height:360,fps:25};
-p.clips=[{file:'assets/S01_image.png',type:'image',duration:2.5,motion:'zoom_in',motion_strength:.15},{file:'assets/S02_image.png',type:'image',duration:2,motion:'pan_left',motion_strength:.1,transition:{type:'fade',duration:.5}},
+p.clips=[{file:'assets/S01_image.png',type:'image',duration:2.5,motion:'zoom_in',motion_strength:.15,overlay:'sparkle',overlay_strength:.6},{file:'assets/S02_image.png',type:'image',duration:2,motion:'pan_left',motion_strength:.1,overlay:'glow',transition:{type:'fade',duration:.5}},
   {file:'assets/S03_video.mp4',type:'video',fit_duration:2,mute:false,transition:{type:'none',duration:0}}];
 p.subtitle.items=[{index:1,start:.3,end:2.2,text:'안녕하세요 {고모}'},{index:2,start:2.6,end:4.3,text:'두 번째\n줄입니다'}];
 p.dubbing.takes=[{file:'takes/line_0001_v1.wav',subtitle:1,offset:-.2,trim_start:.2,trim_end:1.8,volume:.8,duration:2}];

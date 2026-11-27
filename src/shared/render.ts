@@ -5,6 +5,7 @@
  *  이미지 움직임은 perspective 필터의 소수점 좌표를 써서 떨림이 없다. */
 import type {ComposerProject,SubtitleItem} from './types';
 import {clipDuration,clipSpeed,projectCues,takePosition} from './project';
+import {glowParams,overlayMode,overlaySize} from './overlays';
 import {buildSegments,ignoredEffects,resolveTransition,splineExpr,toneMatrix,type Segment} from './camera';
 import {musicLayers} from './media';
 
@@ -23,7 +24,9 @@ export interface RenderOptions{
   /** Windows 글꼴 폴더 등 (선택) */
   fontsDir?:string;
 }
-export interface ClipJob{index:number;args:string[];output:string;duration:number}
+/** 분위기 효과 프레임을 FFmpeg 입력(pipe:0)으로 넣어야 하는 구간: 효과 이름 · 그리는 크기 · 프레임 수 · 시작 시각(영상 전체 기준) · 세기 */
+export interface OverlayFeed{kind:string;w:number;h:number;frames:number;fps:number;t0:number;strength:number}
+export interface ClipJob{index:number;args:string[];output:string;duration:number;overlay?:OverlayFeed}
 export interface RenderPlan{size:{w:number;h:number};fps:number;total:number;clipJobs:ClipJob[];assembly:{args:string[];graph:string};ass:string|null;
   /** 아직 구현하지 않아 무시한 효과 필드 (로그용) */ignored:string[]}
 
@@ -102,10 +105,14 @@ export function cameraFilter(seg:Segment,fps:number):string|null{
   return `perspective=${Object.entries(q).map(([k,v])=>`${k}='${v}'`).join(':')}:interpolation=cubic:sense=source:eval=frame`;
 }
 /** 색감·분위기 효과: 구간마다 xfade 전에 넣어 전환 동안 자연스럽게 섞이게 한다 */
-export function lookFilters(seg:Segment):string[]{
+export function lookFilters(seg:Segment,height=1080):string[]{
   const out:string[]=[];const m=toneMatrix(seg.tone);
   if(m){const k=['rr','rg','rb','gr','gg','gb','br','bg','bb'];out.push('format=gbrp',`colorchannelmixer=${k.map((n,i)=>`${n}=${f(m[i])}`).join(':')}`);}
   if(seg.overlay==='vignette')out.push(`vignette=angle=${f(.3+.6*Math.max(0,Math.min(1,seg.overlayStrength)))}`);
+  if(seg.overlay==='glow'){ // 밝은 부분을 크게 번지게 해 screen 으로 더함 (RGB 에서 섞어야 색이 맞음)
+    const g=glowParams(seg.overlayStrength,height);const L=`gl${seg.index}`;
+    out.push('format=gbrp',`split[${L}a][${L}b];[${L}b]gblur=sigma=${f(g.sigma)},curves=all='0/0 0.5/${f(.5+g.lift)} 1/1'[${L}g];[${L}a][${L}g]blend=all_mode=screen:all_opacity=${f(g.opacity)}`);
+  }
   return out;
 }
 export function buildClipJobs(p:ComposerProject,o:RenderOptions,segments:Segment[]=buildSegments(p)):ClipJob[]{
@@ -116,9 +123,21 @@ export function buildClipJobs(p:ComposerProject,o:RenderOptions,segments:Segment
     const fit=String(clip.fit||p.output.fit||'cover');const bg=String(p.output.background||'#000000');
     const args=['-hide_banner','-y','-nostdin'];let vf:string[];let useAudio=false;
     const eq=[clip.brightness,clip.contrast,clip.saturation].some(v=>v!=null&&v!==0&&v!==1)?[`eq=brightness=${f(Number(clip.brightness)||0)}:contrast=${f(clip.contrast==null?1:Number(clip.contrast))}:saturation=${f(clip.saturation==null?1:Number(clip.saturation))}`]:[];
-    const look=[...eq,...lookFilters(seg)];
+    const look=[...eq,...lookFilters(seg,h)];
     // 모든 구간 공통 끝맺음: 같은 크기·SAR·픽셀 형식·fps, 프레임 수를 정확히 N개로
-    const tail=[...look,'setsar=1','format=yuv420p',`tpad=stop_mode=clone:stop=-1`,`trim=end_frame=${N}`,'setpts=N/FRAME_RATE/TB'];
+    const finish=['setsar=1','format=yuv420p',`tpad=stop_mode=clone:stop=-1`,`trim=end_frame=${N}`,'setpts=N/FRAME_RATE/TB'];
+    // 빛·입자 효과: 프레임을 pipe:0 으로 받아 장면 위에 섞는다 (screen = 밝은 빛만 더함, alpha = 꽃잎처럼 덮음)
+    const ovSize=seg.overlay?overlaySize(seg.overlay,w/h,o.draft):null;const ovMode=seg.overlay?overlayMode(seg.overlay):null;
+    const overlay:OverlayFeed|undefined=ovSize&&seg.overlay?{kind:seg.overlay,w:ovSize.w,h:ovSize.h,frames:N,fps,t0:seg.startFrame/fps,strength:seg.overlayStrength}:undefined;
+    const vgraph=(base:string[],ovInput:number)=>{
+      const b=[...base,...look].join(',');
+      if(!overlay)return `[0:v]${[b,...finish].join(',')}[v]`;
+      const sc=`[${ovInput}:v]scale=${w}:${h}:flags=bicubic,setsar=1`;
+      if(ovMode==='alpha')return `[0:v]${b},setsar=1,format=rgba[ovb];${sc},format=rgba[ovl];[ovb][ovl]overlay=format=auto:eof_action=repeat,${finish.join(',')}[v]`;
+      return `[0:v]${b},setsar=1,format=gbrp[ovb];${sc},format=gbrp[ovl];[ovb][ovl]blend=all_mode=screen,${finish.join(',')}[v]`;
+    };
+    const ovArgs=overlay?['-f','rawvideo','-pix_fmt','rgba','-s',`${overlay.w}x${overlay.h}`,'-framerate',fs,'-i','pipe:0']:[];
+    if(overlay)args.splice(args.indexOf('-nostdin'),1); // 효과 프레임을 표준 입력으로 받는다
     if(seg.type==='image'){
       args.push('-loop','1','-framerate',fs,'-t',f(len+2/fps),'-i',src);
       const mf=cameraFilter(seg,fps);
@@ -137,16 +156,14 @@ export function buildClipJobs(p:ComposerProject,o:RenderOptions,segments:Segment
       if(useAudio){
         const af=['asetpts=PTS-STARTPTS',...atempoChain(speed),`aresample=${AUDIO_RATE}`,'aformat=sample_fmts=fltp:channel_layouts=stereo',
           ...(clip.volume!=null&&Math.abs(Number(clip.volume)-1)>1e-6?[`volume=${f(Number(clip.volume))}`]:[]),`apad=whole_dur=${ls}`,`atrim=duration=${ls}`];
-        vf.push(...tail);
-        args.push('-filter_complex',`[0:v]${vf.join(',')}[v];[0:a]${af.join(',')}[a]`,'-map','[v]','-map','[a]');
+        args.push(...ovArgs,'-filter_complex',`${vgraph(vf,1)};[0:a]${af.join(',')}[a]`,'-map','[v]','-map','[a]');
       }
     }
     if(!useAudio){
-      vf.push(...tail);
-      args.push('-f','lavfi','-t',ls,'-i',`anullsrc=r=${AUDIO_RATE}:cl=stereo`,'-filter_complex',`[0:v]${vf.join(',')}[v]`,'-map','[v]','-map','1:a');
+      args.push('-f','lavfi','-t',ls,'-i',`anullsrc=r=${AUDIO_RATE}:cl=stereo`,...ovArgs,'-filter_complex',vgraph(vf,2),'-map','[v]','-map','1:a');
     }
     args.push(...encoderArgs(o.draft,'intermediate',fps),'-r',fs,'-frames:v',String(N),'-c:a','pcm_s16le','-ar',String(AUDIO_RATE),'-ac','2','-t',ls,'-progress','pipe:1','-nostats',out);
-    return {index:seg.index,args,output:out,duration:len};
+    return {index:seg.index,args,output:out,duration:len,...(overlay?{overlay}:{})};
   });
 }
 

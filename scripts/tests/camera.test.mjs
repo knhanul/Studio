@@ -51,7 +51,7 @@ await test('render: one job per segment, no xfade between shots, offsets on fram
   const j0=plan.clipJobs[0].args.join(' ');assert.match(j0,/perspective=x0='/);assert.match(j0,/trim=end_frame=234/);assert.match(j0,/-frames:v 234/);assert.match(j0,/setsar=1,format=yuv420p/);
   assert.match(plan.clipJobs[1].args.join(' '),/colorchannelmixer=rr=1.06/);
   const jv=plan.clipJobs[3].args.join(' ');assert.match(jv,/-ss 0.12 -t 4.88 -i \/proj\/c.mp4/,'black lead trimmed');
-  assert.deepEqual(plan.ignored,['overlay=sparkle']);assert.equal(plan.total,19.5);assert.ok(plan.assembly.args.join(' ').includes('-frames:v 585'));});
+  assert.deepEqual(plan.ignored,[],'sparkle is supported now');assert.equal(plan.total,19.5);assert.ok(plan.assembly.args.join(' ').includes('-frames:v 585'));});
 await test('old project without effect fields still renders the same way (one job per clip, legacy motion)',()=>{
   const x=p.createProject('old');x.clips=[{file:'a.png',type:'image',duration:4,motion:'zoom_in',motion_strength:.1},{file:'b.png',type:'image',duration:3,transition:{type:'fade',duration:.5}},{file:'c.png',type:'image',duration:3,transition:{type:'crossfade',duration:.5}}];
   const segs=c.buildSegments(x);assert.equal(segs.length,3);assert.equal(segs[0].camera.kind,'legacy');

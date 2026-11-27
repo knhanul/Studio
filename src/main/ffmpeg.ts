@@ -5,7 +5,9 @@ import {mkdir,mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type {ComposerProject,FfmpegStatus} from '../shared/types';
-import {buildRenderPlan,leadFromStats,parseMediaInfo,parseProgressSeconds,type MediaInfo} from '../shared/render';
+import {buildRenderPlan,leadFromStats,parseMediaInfo,parseProgressSeconds,type MediaInfo,type OverlayFeed} from '../shared/render';
+import {drawOverlay} from '../shared/overlays';
+import type {Writable} from 'node:stream';
 import {musicLayers} from '../shared/media';
 
 function bundledPath():string{
@@ -51,11 +53,23 @@ export async function probeLead(ffmpeg:string,file:string):Promise<number>{
     p.on('close',()=>resolve(leadFromStats(err)));
   });
 }
-export interface RunOptions{cwd?:string;duration?:number;onProgress?:(fraction:number)=>void;signal?:AbortSignal}
+export interface RunOptions{cwd?:string;duration?:number;onProgress?:(fraction:number)=>void;signal?:AbortSignal;
+  /** 표준 입력(pipe:0)으로 보낼 프레임 (분위기 효과) */feed?:(stdin:Writable)=>Promise<void>}
+/** 분위기 효과 프레임을 차례로 그려 보낸다 (받는 쪽이 느리면 기다림) */
+export async function feedOverlay(stdin:Writable,ov:OverlayFeed):Promise<void>{
+  const buf=new Uint8Array(ov.w*ov.h*4);
+  for(let n=0;n<ov.frames;n++){
+    if(stdin.destroyed)return;
+    drawOverlay(ov.kind,buf,ov.w,ov.h,ov.t0+n/ov.fps,ov.strength);
+    if(!stdin.write(Buffer.from(buf)))await new Promise<void>(r=>{const done=()=>{stdin.off('drain',done);stdin.off('close',done);stdin.off('error',done);r();};stdin.once('drain',done);stdin.once('close',done);stdin.once('error',done);});
+  }
+  stdin.end();
+}
 export function runFfmpeg(ffmpeg:string,args:string[],o:RunOptions={}):Promise<void>{
   return new Promise((resolve,reject)=>{
     if(o.signal?.aborted)return reject(new Error('취소됨'));
     const p=spawn(ffmpeg,args,{cwd:o.cwd,windowsHide:true});let tail='';
+    if(o.feed){p.stdin.on('error',()=>{/* FFmpeg 가 먼저 끝나면 EPIPE — 무시 */});void o.feed(p.stdin).catch(()=>{});}
     p.stdout.setEncoding('utf8');p.stderr.setEncoding('utf8');
     p.stdout.on('data',(d:string)=>{const t=parseProgressSeconds(d);if(t!=null&&o.duration)o.onProgress?.(Math.min(1,t/o.duration));});
     p.stderr.on('data',(d:string)=>{tail=(tail+d).slice(-4000);});
@@ -89,7 +103,7 @@ export async function renderProject(project:ComposerProject,o:RenderJobOptions):
     const clipTotal=plan.clipJobs.reduce((n,j)=>n+j.duration,0)||1;
     const W=.65;let done=0;
     for(const job of plan.clipJobs){
-      await runFfmpeg(o.ffmpeg,job.args,{cwd:work,duration:job.duration,signal:o.signal,onProgress:fr=>o.onProgress?.(W*(done+fr*job.duration)/clipTotal,`장면 ${job.index+1}/${plan.clipJobs.length} 만드는 중`)});
+      await runFfmpeg(o.ffmpeg,job.args,{cwd:work,duration:job.duration,signal:o.signal,feed:job.overlay?stdin=>feedOverlay(stdin,job.overlay!):undefined,onProgress:fr=>o.onProgress?.(W*(done+fr*job.duration)/clipTotal,`장면 ${job.index+1}/${plan.clipJobs.length} 만드는 중`)});
       done+=job.duration;
     }
     o.onProgress?.(W,'장면 잇기 · 자막 · 소리 섞는 중');

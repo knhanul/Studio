@@ -1,7 +1,8 @@
 import {useState,type DragEvent} from 'react';
 import {ArrowDown,ArrowUp,Film,Image as ImageIcon,ImagePlus,Library,Plus,RefreshCw,Replace,Trash2} from 'lucide-react';
 import {clipDuration,clipSpeed,MOTIONS,round,TRANSITIONS,videoSourceSpan} from '../../shared/project';
-import {isEffectsProject,resolveTransition} from '../../shared/camera';
+import {isEffectsProject,resolveTransition,TONE_LABELS} from '../../shared/camera';
+import {OVERLAY_LABELS} from '../../shared/overlays';
 import {importedItems,insertPosterBefore,mergeLibrary,sceneAlternatives,swapClipMedia} from '../../shared/media';
 import type {Clip} from '../../shared/types';
 import {useMediaActions} from '../components/MediaLibrary';
@@ -52,6 +53,8 @@ export function ScenesPanel(){
   const replace=async()=>{const [it]=await window.compose.media.import('visual',false);if(!it)return;if(it.type!=='image'&&it.type!=='video')return;
     commit(p=>{p.media_library=mergeLibrary(p.media_library,importedItems([it]));p.clips[i]=swapClipMedia(p.clips[i],{file:it.file,kind:it.type as Clip['type'],duration:it.duration},dur);return p;});toast('장면 미디어를 바꿨어요.','success');};
   const alts=sceneAlternatives(doc,clip);
+  /** 같은 장면(scene_id)의 샷 전체에 적용 — 효과·색감은 장면 단위 */
+  const patchScene=(x:Partial<Clip>)=>commit(p=>{const sid=p.clips[i].scene_id;p.clips=p.clips.map((c,k)=>k===i||(sid!=null&&c.scene_id===sid)?{...c,...x}:c);return p;});
   const sameShot=isSameShot(doc,i);
   const resolved=resolveTransition(tr?.type,isEffectsProject(doc));
   const trValue=resolved==='none'?'none':resolved==='fade'?'crossfade':resolved==='fadeblack'?'fadeblack':String(tr?.type);
@@ -90,6 +93,12 @@ export function ScenesPanel(){
           </div>
           <label className="check-line"><input type="checkbox" checked={!clip.mute} onChange={e=>patch({mute:!e.target.checked})}/> 영상 원래 소리 사용</label>
         </>}
+    </Section>
+    <Section title="분위기 효과 · 색감" aside={clip.scene_id?<span className="muted-text small">{String(clip.scene_id)} 장면 전체</span>:undefined}>
+      <Field label="분위기 효과"><select value={String(clip.overlay||'none')} onChange={e=>patchScene({overlay:e.target.value==='none'?null:e.target.value,...(clip.overlay_strength==null?{overlay_strength:.5}:{})})}>{Object.entries(OVERLAY_LABELS).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></Field>
+      {clip.overlay&&clip.overlay!=='none'&&<Slider label="효과 세기" value={Number(clip.overlay_strength??.5)} min={0} max={1} step={.05} format={v=>v<.25?'아주 약하게':v<.5?'약하게':v<.75?'보통':'강하게'} onChange={v=>patchScene({overlay_strength:round(v,2)})}/>}
+      <Field label="색감"><select value={String(clip.tone||'none')} onChange={e=>patchScene({tone:e.target.value==='none'?null:e.target.value})}>{Object.entries(TONE_LABELS).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></Field>
+      <Button kind="ghost" size="sm" onClick={()=>commit(p=>{p.clips.forEach(c=>{c.overlay=clip.overlay??null;c.overlay_strength=clip.overlay_strength;c.tone=clip.tone??null;});return p;})}>모든 장면에 같은 효과·색감 적용</Button>
     </Section>
     {clip.type==='image'&&<Section title="움직임">
       <Field label="화면 움직임"><select value={String(clip.motion||'none')} onChange={e=>patch({motion:e.target.value})}>{MOTIONS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}</select></Field>
