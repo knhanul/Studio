@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
-import {Captions,ChevronLeft,Film,Settings2,ChevronRight,Circle,FileAudio,ListChecks,Mic2,Play,RefreshCw,Repeat,Scissors,Square,Trash2,Wand2,X} from 'lucide-react';
+import {Captions,Check,ChevronLeft,Film,Settings2,ChevronRight,Circle,FileAudio,ListChecks,Mic2,Play,RefreshCw,Repeat,Scissors,Square,Trash2,Wand2,X} from 'lucide-react';
 import {DEFAULT_PAUSE,detectVoiceBounds,encodeWav,meterFraction,pauseStart,pauseStep,splitAtMarks,waveformPeaks,type PauseState} from '../../shared/audio';
 import {applyTrim,dubWindows,fitTimelineToTakes,pictureTake,removeTakeForCue,round,setTakeForCue,sortCues,takeForCue,takeLength,timeline,type DubWindow} from '../../shared/project';
 import type {DubbingTake,StepId} from '../../shared/types';
@@ -105,18 +105,21 @@ function Waveform({url,take}:{url?:string;take:DubbingTake}){
 }
 
 export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:ReactNode;goto:(s:StepId)=>void}){
-  const {doc,commit,urls,selectedCue,setSelectedCue,seek,toast,setPlaying,cues}=useEditor();
+  const {doc,commit,urls,selectedCue,setSelectedCue,seek,toast,setPlaying,cues,checkedCues,setCheckedCues}=useEditor();
   const rec=useRecorder();
   const [phase,setPhase]=useState<Phase>('idle');const [count,setCount]=useState(0);const [elapsed,setElapsed]=useState(0);
   const [opts,setOpts]=useState<Opts>(loadOpts);
   const setOpt=<K extends keyof Opts>(k:K,v:Opts[K])=>setOpts(o=>{const n={...o,[k]:v};localStorage.setItem(OPTS_KEY,JSON.stringify(n));return n;});
   const items=useMemo(()=>sortCues(doc.subtitle.items||[]),[doc.subtitle.items]);
   /** 여러 문장 고르기 (체크) — 선택한 녹음 지우기 · 선택한 문장 연속 녹음 */
-  const [checked,setChecked]=useState<number[]>([]);
-  useEffect(()=>{setChecked(c=>c.filter(i=>items.some(x=>x.index===i)));},[items]);
+  const checked=checkedCues;const setChecked=setCheckedCues;
   const [cont,setCont]=useState<Cont|null>(null);
   const [showSettings,setShowSettings]=useState(false);
   const [scope,setScope]=useState<Scope>('one');
+  // 문장을 고르기 시작하면 녹음 범위를 「선택한 문장」으로, 모두 풀면 「이 문장」으로
+  const prevChecked=useRef(checkedCues.length);
+  useEffect(()=>{const before=prevChecked.current,now=checkedCues.length;prevChecked.current=now;
+    if(before===0&&now>0)setScope(s=>s==='one'?'checked':s);else if(before>0&&now===0)setScope(s=>s==='checked'?'one':s);},[checkedCues.length]);
   /** 이번에 막 녹음한 문장 (오른쪽 목록에 「방금」) */
   const [justDone,setJustDone]=useState<number[]>([]);
   const contRef=useRef<(Cont&{marks:number[];pause:PauseState})|null>(null);
@@ -365,12 +368,12 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
         :phase==='countdown'?<Button kind="outline" onClick={cancel}>취소</Button>
         :<>
           <Segmented label="녹음 범위" value={scope} options={[{id:'one' as Scope,label:'이 문장'},{id:'checked' as Scope,label:checked.length?`선택한 ${checked.length}개`:'선택한 문장'},{id:'rest' as Scope,label:'여기부터 끝까지'}]} onChange={setScope}/>
-          <button type="button" className="rec-button" disabled={busy||!cur||(scope==='checked'&&!checked.length)} onClick={startScope} title={scope==='checked'&&!checked.length?'오른쪽 목록에서 문장을 체크해 주세요':'녹음 시작 (R)'}><Circle size={14} fill="currentColor"/> {scope==='one'&&cur&&takeForCue(doc,cur.index)?'다시 녹음':'녹음 시작'}</button>
+          <button type="button" className="rec-button" disabled={busy||!cur||(scope==='checked'&&!checked.length)} onClick={startScope} title={scope==='checked'&&!checked.length?'오른쪽 목록에서 체크하거나 타임라인 자막을 Ctrl·Shift+클릭해 고르세요':'녹음 시작 (R)'}><Circle size={14} fill="currentColor"/> {scope==='one'&&cur&&takeForCue(doc,cur.index)?'다시 녹음':'녹음 시작'}</button>
         </>}
       <IconButton label="다음 문장" disabled={busy||!next} onClick={()=>next&&focus(next.index)}><ChevronRight size={18}/></IconButton>
       <span className="key-hint">{busy?<><kbd>R</kbd> 저장 <kbd>Esc</kbd> 취소{cont&&!clock?<> <kbd>N</kbd> 다음 문장</>:null}</>:<><kbd>R</kbd> 녹음 시작 <kbd>‹</kbd><kbd>›</kbd> 문장 고르기</>}</span>
     </div>
-    <Timeline live={live}/>
+    <Timeline live={live} multiSelect={!busy}/>
   </div>;
   return <StepLayout header={header} actionBar={actionBar} panel={items.length?<DubbingPanel busy={busy} curIndex={curIndex} onRecord={idx=>void begin(idx)} onFocus={focus} checked={checked} setChecked={setChecked} onRecordMany={q=>{setScope('checked');void startCont(q);}} activeQueue={cont?.queue??(busy&&curIndex!=null?[curIndex]:[])} recordingCue={phase==='recording'?curIndex:null} justDone={justDone}/>:undefined}>{main}</StepLayout>;
 }
@@ -378,17 +381,11 @@ export function DubbingStep({header,actionBar,goto}:{header:ReactNode;actionBar:
 function DubbingPanel({busy,curIndex,onRecord,onFocus,checked,setChecked,onRecordMany,activeQueue,recordingCue,justDone}:{busy:boolean;curIndex:number|null;onRecord:(idx:number)=>void;onFocus:(idx:number)=>void;
   checked:number[];setChecked:(v:number[]|((c:number[])=>number[]))=>void;onRecordMany:(queue:number[])=>void;
   /** 이번 녹음에 들어가는 문장 · 지금 녹음 중인 문장 · 막 녹음한 문장 */activeQueue:number[];recordingCue:number|null;justDone:number[]}){
-  const {doc,commit,urls,toast}=useEditor();
+  const {doc,commit,urls,toast,pickCue}=useEditor();
   const items=sortCues(doc.subtitle.items||[]);
-  const anchor=useRef<number|null>(null);
   const sel=new Set(checked);
   /** 체크: 그냥 누르면 하나 켜고 끄기, Shift 를 누르고 누르면 앞에 누른 곳부터 여기까지 한 번에 */
-  const toggle=(idx:number,shift:boolean)=>{
-    const k=items.findIndex(c=>c.index===idx);
-    if(shift&&anchor.current!=null){const a=items.findIndex(c=>c.index===anchor.current);if(a>=0){const [lo,hi]=a<k?[a,k]:[k,a];const range=items.slice(lo,hi+1).map(c=>c.index);const on=!sel.has(idx);
-      setChecked(c=>on?[...new Set([...c,...range])]:c.filter(x=>!range.includes(x)));anchor.current=idx;return;}}
-    anchor.current=idx;setChecked(c=>c.includes(idx)?c.filter(x=>x!==idx):[...c,idx]);
-  };
+  const toggle=(idx:number,shift:boolean)=>pickCue(idx,shift?'range':'toggle');
   const checkedTakes=checked.filter(i=>takeForCue(doc,i));
   const removeChecked=()=>{if(!checkedTakes.length)return;if(!confirm(`선택한 문장 ${checkedTakes.length}개의 녹음을 지울까요? (파일은 takes 폴더에 남겨 둬요)`))return;
     commit(p=>{let n=p;for(const i of checkedTakes)n=removeTakeForCue(n,i);return n;});toast(`녹음 ${checkedTakes.length}개를 지웠어요.`,'success');};
@@ -413,8 +410,8 @@ function DubbingPanel({busy,curIndex,onRecord,onFocus,checked,setChecked,onRecor
     <ol className="cue-list">{items.map((c,k)=>{const t=takeForCue(doc,c.index);const on=sel.has(c.index);
       const state=recordingCue===c.index?'recording':busy&&activeQueue.includes(c.index)?'queued':justDone.includes(c.index)?'just':'';
       return <li key={c.index} className={`${c.index===curIndex&&!busy?'selected':''} ${on&&!busy?'checked':''} ${state?`is-${state}`:''} ${busy&&!activeQueue.includes(c.index)?'dim':''}`}>
-      <label className="cue-check" title="여러 개 고르기 (Shift: 범위)" onClick={e=>{e.preventDefault();if(!busy)toggle(c.index,e.shiftKey);}}><input type="checkbox" checked={on} readOnly disabled={busy} aria-label={`문장 ${k+1} 고르기`}/></label>
-      <button type="button" disabled={busy} onClick={e=>{if(e.ctrlKey||e.metaKey||e.shiftKey){toggle(c.index,e.shiftKey);return;}onFocus(c.index);}}>
+      <button type="button" role="checkbox" aria-checked={on} aria-label={`문장 ${k+1} 고르기`} className={`cue-check ${on?'on':''}`} title="여러 개 고르기 (Shift: 범위)" disabled={busy} onClick={e=>toggle(c.index,e.shiftKey)}><Check size={12} strokeWidth={3}/></button>
+      <button type="button" disabled={busy} onClick={e=>{if(e.ctrlKey||e.metaKey||e.shiftKey){toggle(c.index,e.shiftKey);return;}pickCue(c.index,'anchor');onFocus(c.index);}}>
       <span className="cue-num">{k+1}</span><span className="cue-text">{c.text||<em>(빈 문장)</em>}</span>{state==='recording'?<span className="tag tag-rec">● 녹음 중</span>:state==='queued'&&!t?<span className="tag">대기</span>:t?<span className="tag tag-success">{state==='just'?'방금 · ':''}{takeLength(t).toFixed(1)}초</span>:<span className="tag">미녹음</span>}</button></li>;})}</ol>
     {curIndex!=null&&<Section title="선택한 문장의 녹음">
       {take?<>

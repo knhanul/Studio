@@ -14,6 +14,10 @@ export interface EditorState{
   /** 미디어 보관함 열기 — clip: 그 장면 미디어 바꾸기 · music/effect: 소리 고르기 */
   openLibrary:(mode?:LibraryMode)=>void;
   selectedAudio:string|null;setSelectedAudio:(id:string|null)=>void;
+  /** 여러 문장 고르기 (더빙: 문장 목록 체크 · 타임라인 Ctrl/Shift 클릭) */
+  checkedCues:number[];setCheckedCues:(v:number[]|((c:number[])=>number[]))=>void;
+  /** toggle: 하나 켜고 끄기 · range: 앞에 누른 문장부터 여기까지 · anchor: 체크는 그대로 두고 기준만 옮기기 */
+  pickCue:(idx:number,mode:'toggle'|'range'|'anchor')=>void;
 }
 export type LibraryMode={kind:'browse'}|{kind:'clip';index:number}|{kind:'bgm'}|{kind:'music'}|{kind:'effect'};
 export const EditorContext=createContext<EditorState|null>(null);
