@@ -124,7 +124,7 @@ export function fromCreatorProject(cp:CreatorProject):{project:ComposerProject;s
     cursor+=dur;
   }
   p.subtitle.items=items;
-  const music=fileOf(cp.assembly?.bgmAssetId)||library.find(m=>m.role==='bgm')?.file||null;
+  const music=packageBgm(library,cp);
   if(music&&kindOfFile(music)==='audio')p.bgm={...p.bgm,file:music};
   return {project:p,skipped,fallbacks};
 }
@@ -252,4 +252,20 @@ export function clipFromItem(doc:ComposerProject,item:MediaItem,duration?:number
 export function scenePoster(doc:ComposerProject,sceneId:string|null|undefined):string|null{
   if(!sceneId)return null;const lib=doc.media_library||[];
   return (lib.find(m=>m.scene_id===sceneId&&m.kind==='image'&&(m.role==='reference'||m.role==='scene'))||lib.find(m=>m.scene_id===sceneId&&m.kind==='image'))?.file||null;
+}
+
+/** 창작실 패키지의 배경음악 고르기 — 창작실 composer_project.json 은 최종 편집안에서 배경음악을 직접 고른 경우에만
+ *  bgm 을 넣는다. 고르지 않았으면 만들어 둔 음악 중에서 자동으로 고른다.
+ *  1) 편집안에서 고른 음악(assembly.bgmAssetId)  2) 가장 나중에 만든 배경음악(BGM_xx)  3) 그 밖의 소리 파일 중 가장 나중 것 */
+export function packageBgm(library:MediaItem[],cp?:CreatorProject|null):string|null{
+  const assets=cp?.assets||[];
+  const chosen=cp?.assembly?.bgmAssetId?assets.find(a=>a.id===cp.assembly!.bgmAssetId&&kindOfFile(a.relativePath)==='audio'):undefined;
+  if(chosen)return norm(chosen.relativePath);
+  const audio=assets.filter(a=>(a.kind==='audio'||kindOfFile(a.relativePath)==='audio')&&a.relativePath);
+  const named=audio.filter(a=>parseAssetName(a.relativePath).bgm!=null);
+  const last=(named.length?named:audio).at(-1);
+  if(last)return norm(last.relativePath);
+  const lib=library.filter(m=>m.kind==='audio');
+  const bgms=lib.filter(m=>m.role==='bgm').sort((a,b)=>(parseAssetName(a.file).bgm??0)-(parseAssetName(b.file).bgm??0)||(a.version||1)-(b.version||1));
+  return (bgms.at(-1)||lib.at(-1))?.file||null;
 }
