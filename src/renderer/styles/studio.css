@@ -291,3 +291,16 @@ body{min-width:1180px}
 .tl-sfx{background:var(--color-success-soft);color:var(--color-success);border-color:color-mix(in srgb,var(--color-success) 30%,transparent)}
 .monitor-defs{position:absolute;width:0;height:0;overflow:hidden}
 .monitor-vignette{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,transparent 45%,rgba(0,0,0,.85) 100%)}
+
+/* 더빙: 여러 문장 고르기 · 연속 녹음 */
+.cue-select-bar{display:flex;align-items:center;gap:2px;flex-wrap:wrap;margin-bottom:6px}
+.cue-select-count{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--color-text-secondary);margin-right:auto}
+.cue-select-actions{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.cue-list li{display:flex;align-items:flex-start;gap:2px}
+.cue-list li>button{flex:1;min-width:0}
+.cue-check{flex:0 0 auto;display:grid;place-items:center;width:24px;height:34px;cursor:pointer}
+.cue-check input{width:14px;height:14px;cursor:pointer;margin:0}
+.cue-list li.checked>button{background:color-mix(in srgb,var(--color-primary) 8%,transparent)}
+.pause-pick{display:inline-flex;align-items:center;gap:6px}
+.pause-pick small{font-size:11px;color:var(--color-text-muted)}
+.prompter-head .tag-warning{display:inline-flex;align-items:center;gap:4px}
