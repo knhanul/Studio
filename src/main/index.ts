@@ -5,12 +5,18 @@ import {Readable} from 'node:stream';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {EngineController,EngineConfig} from './engine';
+import {BRAND} from '../shared/brand';
+declare const __APP_VERSION__: string | undefined;
+/** 화면에 보이는 버전: package.json 의 버전 (브랜드 이름을 바꿔도 같게) */
+const appVersion=()=>typeof __APP_VERSION__==='string'?__APP_VERSION__:app.getVersion();
 import {probeLead,probeMedia,renderProject,resolveFfmpeg} from './ffmpeg';
 import {createProject,fromCreatorHandoff,fromSrt,isCreatorHandoff,matchTakesByText,normalizeProject,toSrt} from '../shared/project';
 import {attachLibrary,fromCreatorProject,packageBgm,isCreatorProject,libraryFromCreator,libraryFromFiles,librarySummary,type CreatorProject} from '../shared/media';
 import type {ComposerProject,DubbingTake,FfmpegStatus,MediaItem,ProjectState,RecentProject,RenderEvent,SubtitleItem} from '../shared/types';
 
 // corsEnabled + Access-Control-Allow-Origin: 화면(file:// 또는 개발 서버)에서 fetch()로 녹음·음악을 읽을 수 있게 (파형·들어 보기·미리듣기)
+// 누니 편집실은 고모 편집실과 저장 폴더(userData)를 따로 쓴다
+if(BRAND.id!=='gomo')app.setName(BRAND.appName);
 protocol.registerSchemesAsPrivileged([{scheme:'gomo-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:true,corsEnabled:true}}]);
 let win:BrowserWindow|null=null;
 let currentPath='';
@@ -208,7 +214,7 @@ function registerIpc(){
   ipcMain.handle('engine:pickRepo',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0];});
   ipcMain.handle('engine:pickPython',async()=>{const r=await dialog.showOpenDialog(win!,{properties:['openFile'],filters:[{name:'Python',extensions:['exe']},{name:'모든 파일',extensions:['*']}]});return r.canceled?null:r.filePaths[0];});
   ipcMain.handle('engine:action',async(_e,action:string,args:Record<string,unknown>={})=>{if(!['ping','devices','validate','render','cancel'].includes(action))throw new Error('허용되지 않은 엔진 명령');return engine.request(action,{...args,base_dir:dir(),project_path:currentPath},action==='render'?24*3600*1000:120000);});
-  ipcMain.handle('app:info',()=>({version:app.getVersion(),projectDir:dir(),userData:app.getPath('userData')}));
+  ipcMain.handle('app:info',()=>({version:appVersion(),projectDir:dir(),userData:app.getPath('userData')}));
 }
 const MIME:Record<string,string>={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',gif:'image/gif',bmp:'image/bmp',mp4:'video/mp4',m4v:'video/mp4',mov:'video/quicktime',webm:'video/webm',mkv:'video/x-matroska',
   mp3:'audio/mpeg',wav:'audio/wav',m4a:'audio/mp4',aac:'audio/aac',flac:'audio/flac',ogg:'audio/ogg'};
@@ -223,7 +229,7 @@ async function serveFile(file:string,range:string|null):Promise<Response>{
   const body=Readable.toWeb(createReadStream(file,{start,end})) as unknown as ReadableStream;
   return new Response(body,{status:206,headers:{...CORS,'Content-Type':type,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${size}`,'Accept-Ranges':'bytes'}});
 }
-function createWindow(){win=new BrowserWindow({width:1536,height:950,minWidth:1180,minHeight:720,backgroundColor:'#F8FAFC',title:'고모 편집실',icon:path.join(__dirname,'../../resources/app.png'),autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'../preload/index.js'),nodeIntegration:false,contextIsolation:true,sandbox:false}});win.on('closed',()=>win=null);if(!app.isPackaged&&process.env.ELECTRON_RENDERER_URL){void win.loadURL(process.env.ELECTRON_RENDERER_URL);}else void win.loadFile(path.join(__dirname,'../renderer/index.html'));}
+function createWindow(){win=new BrowserWindow({width:1536,height:950,minWidth:1180,minHeight:720,backgroundColor:'#F8FAFC',title:BRAND.nameKo,icon:path.join(__dirname,`../../${BRAND.iconDir}/app.png`),autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'../preload/index.js'),nodeIntegration:false,contextIsolation:true,sandbox:false}});win.on('closed',()=>win=null);if(!app.isPackaged&&process.env.ELECTRON_RENDERER_URL){void win.loadURL(process.env.ELECTRON_RENDERER_URL);}else void win.loadFile(path.join(__dirname,'../renderer/index.html'));}
 app.whenReady().then(async()=>{
   try{config=JSON.parse(readFileSync(configPath(),'utf8')) as EngineConfig;}catch{config={repo:'',python:''};}engine.setConfig(config);
   try{settings={ffmpeg:'',...JSON.parse(readFileSync(settingsPath(),'utf8'))};}catch{settings={ffmpeg:''};}

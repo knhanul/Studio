@@ -143,6 +143,21 @@ npm run dev
 Whisper 자동 자막/정렬, 색감·필터·효과 UI, 녹음 여러 버전 고르기, 3가지 외 전환 효과, 영상 클립 움직임,
 NVENC 하드웨어 인코딩, 트랙 잠금/솔로, 타임라인 핸들 끌어서 자르기, 자막 트랙 별도 첨부(soft sub), AI 편집안.
 
+## 브랜드 (고모 편집실 / 누니 편집실)
+
+기본은 **누니 편집실**(새 아이콘 `resources/brands/nuni`)이고, 옵션 `gomo` 를 주면 **고모 편집실**(기존 아이콘 `resources/brands/gomo`)로 실행·빌드합니다.
+
+```bash
+npm run dev            # 누니 편집실로 실행
+npm run dev -- gomo    # 고모 편집실로 실행
+npm test -- gomo       # 테스트 (브랜드 옵션은 빌드·실행에 적용)
+npm run dist:win       # 누니 편집실 설치 파일
+npm run dist:win -- gomo   # 고모 편집실 설치 파일
+```
+
+Windows 배치 파일도 같습니다: `START_WINDOWS.bat gomo`, `BUILD_WINDOWS.bat gomo`.
+고모 편집실은 예전과 같은 식별자(`com.gomoworkshop.compose`)와 저장 폴더를 쓰고, 누니 편집실은 따로 설치·저장됩니다.
+
 ## 개발 명령
 
 ```powershell
