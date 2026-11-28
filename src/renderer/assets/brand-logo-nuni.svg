@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+ <title>nuni studio orange</title>
+ <defs><radialGradient id="orb" cx="50%" cy="50%" fx="50%" fy="50%" r="50%"><stop offset="0%" stop-color="#FFFFFF"/>
+<stop offset="16%" stop-color="#FFE8D6"/>
+<stop offset="38%" stop-color="#FFB06A"/>
+<stop offset="68%" stop-color="#FF7A2E"/>
+<stop offset="100%" stop-color="#FC6719"/></radialGradient></defs>
+ <g transform="scale(4)">
+    <g stroke="#FC6719" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="94" y="40" width="68" height="112" rx="34" fill="#FC6719"/>
+      <path fill="none" d="M66 118c0 34 28 62 62 62s62-28 62-62"/>
+      <path fill="none" d="M128 180v34M98 214h60"/>
+    </g>
+    <g stroke="#FFF9F2" stroke-width="8" stroke-linecap="round">
+      <path d="M112 74h32M112 96h32M112 118h32"/>
+    </g>
+   </g>
+ <g transform="translate(596 562) scale(0.365) translate(-238 -233)">
+    <path d="M364 1013 V686.5 A172.5 172.5 0 0 1 709 686.5 V853.5 A159.5 159.5 0 0 0 1028 853.5 V572" fill="none" stroke="#FFFFFF" stroke-width="327" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M364 1013 V686.5 A172.5 172.5 0 0 1 709 686.5 V853.5 A159.5 159.5 0 0 0 1028 853.5 V572" fill="none" stroke="#FC6719" stroke-width="252" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="1028" cy="359" r="143" fill="#FFFFFF"/>
+    <circle cx="1028" cy="359" r="126" fill="url(#orb)"/>
+  </g>
+</svg>

@@ -10,7 +10,8 @@ import {EditorContext,type EditorState,type LibraryMode} from './editor';
 import {MediaLibrary} from './components/MediaLibrary';
 import {librarySummary} from '../shared/media';
 import {usePreviewAudio} from './hooks/usePreviewAudio';
-import brandLogo from './assets/brand-logo.svg';
+import brandLogoGomo from './assets/brand-logo-gomo.svg';
+import brandLogoNuni from './assets/brand-logo-nuni.svg';
 import {DubbingStep} from './pages/Dubbing';
 import {ExportStep,type RenderState} from './pages/Export';
 import {Home} from './pages/Home';
@@ -23,6 +24,7 @@ type History={present:ComposerProject;past:ComposerProject[];future:ComposerProj
 const clone=<T,>(v:T):T=>JSON.parse(JSON.stringify(v)) as T;
 const ICONS:Record<StepId,typeof Film>={scenes:Film,dubbing:Mic2,subtitles:Captions,music:Music2,export:Clapperboard};
 const IDLE_RENDER:RenderState={busy:false,draft:false,progress:0,message:'',output:'',error:'',phase:'idle'};
+const brandLogo=BRAND.id==='gomo'?brandLogoGomo:brandLogoNuni;
 function BrandIcon({size=28}:{size?:number}){return <div className="brand-icon" style={{width:size,height:size}} aria-hidden="true"><img src={brandLogo} alt="" width={size} height={size}/></div>;}
 
 function ScenesStep({header,actionBar}:{header:ReactNode;actionBar:ReactNode}){return <StepLayout header={header} actionBar={actionBar} panel={<ScenesPanel/>}><ScenesMain/></StepLayout>;}
@@ -31,6 +33,7 @@ function LibraryButton({doc,onOpen}:{doc:ComposerProject;onOpen:()=>void}){const
 
 export default function App(){
   const [view,setView]=useState<View>('home');
+  useEffect(()=>{document.title=BRAND.nameKo;},[]);
   const [opened,setOpened]=useState<ProjectState|null>(null);
   const [history,setHistory]=useState<History|null>(null);
   const [saveState,setSaveState]=useState<SaveState>('saved');
